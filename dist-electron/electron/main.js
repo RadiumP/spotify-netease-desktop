@@ -100,7 +100,6 @@ function registerIpcHandlers() {
                 total: tracks.length,
                 currentTrackName: track.name,
             });
-            await new Promise((r) => setTimeout(r, 500)); // 别把网易云接口打太快
         }
         (0, logger_1.log)("info", "匹配阶段完成", {
             total: results.length,
