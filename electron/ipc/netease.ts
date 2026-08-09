@@ -35,6 +35,22 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// 自适应节流：正常情况下按 BASE_DELAY 走，一旦命中限流就翻倍拉长后续所有请求的间隔，
+// 顶到 MAX_DELAY 封顶；连续成功之后再慢慢降回 BASE_DELAY。模块级状态，整个搜索过程共享。
+const BASE_DELAY_MS = 600;
+const MAX_DELAY_MS = 20_000;
+let currentDelayMs = BASE_DELAY_MS;
+
+function isRateLimited(err: any): boolean {
+  const data = err.response?.data;
+  return (
+    err.response?.status === 405 ||
+    data?.code === 405 ||
+    (typeof data?.msg === "string" && data.msg.includes("频繁")) ||
+    (typeof data?.message === "string" && data.message.includes("频繁"))
+  );
+}
+
 export async function searchCandidates(
   cookie: string,
   track: SpotifyTrack,
@@ -42,9 +58,11 @@ export async function searchCandidates(
 ): Promise<NeteaseCandidate[]> {
   const keyword = `${track.name} ${track.artists[0] ?? ""}`;
 
-  const maxAttempts = 3;
+  const maxAttempts = 4;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
+
     try {
       const resp = await axios.get(`${NETEASE_API_BASE}/search`, {
         params: { keywords: keyword, limit, cookie, timestamp: Date.now() },
@@ -57,6 +75,11 @@ export async function searchCandidates(
           bodyCode: resp.data.code,
           bodyMessage: resp.data.message,
         });
+      }
+
+      // 请求顺利成功，把节流间隔慢慢降回去，别一直卡在拉长之后的慢速度
+      if (currentDelayMs > BASE_DELAY_MS) {
+        currentDelayMs = Math.max(BASE_DELAY_MS, currentDelayMs - 300);
       }
 
       const songs = resp.data?.result?.songs ?? [];
@@ -72,19 +95,24 @@ export async function searchCandidates(
 
       return candidates.sort((a, b) => b.score - a.score);
     } catch (err: any) {
+      const rateLimited = isRateLimited(err);
+
+      if (rateLimited) {
+        currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
+        log("warn", `触发网易云限流，节流间隔拉长到 ${currentDelayMs}ms: ${keyword}`);
+      }
+
       log("error", `网易云搜索失败（第${attempt}次尝试）: ${keyword}`, {
         httpStatus: err.response?.status,
         responseData: err.response?.data,
         message: err.message,
+        rateLimited,
+        currentDelayMs,
       });
-      // 接口偶尔抽风（限流/临时报错），退避一下再试，别一首搜索失败就把整批歌单的进度全丢了
-      if (attempt < maxAttempts) {
-        await sleep(1500 * attempt);
-      }
     }
   }
 
-  log("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`);
+  log("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`, { currentDelayMs });
   return []; // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理，不中断整批导出
 }
 
