@@ -1,29 +1,28 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startQrLogin = startQrLogin;
 exports.checkQrLogin = checkQrLogin;
 exports.searchCandidates = searchCandidates;
-exports.createPlaylist = createPlaylist;
+exports.findPlaylistByName = findPlaylistByName;
+exports.getPlaylistTrackIds = getPlaylistTrackIds;
+exports.getOrCreatePlaylist = getOrCreatePlaylist;
 exports.addTracksToPlaylist = addTracksToPlaylist;
-const axios_1 = __importDefault(require("axios"));
+const httpClient_1 = require("../httpClient");
 const neteaseServer_1 = require("../neteaseServer");
 const match_1 = require("./match");
 const logger_1 = require("../logger");
 async function startQrLogin() {
-    const keyResp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/key`, {
+    const keyResp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/key`, {
         params: { timestamp: Date.now() },
     });
     const unikey = keyResp.data.data.unikey;
-    const createResp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/create`, {
+    const createResp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/create`, {
         params: { key: unikey, qrimg: true, timestamp: Date.now() },
     });
     return { unikey, qrimgBase64: createResp.data.data.qrimg };
 }
 async function checkQrLogin(unikey) {
-    const resp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/check`, {
+    const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/login/qr/check`, {
         params: { key: unikey, timestamp: Date.now() },
     });
     return { code: resp.data.code, message: resp.data.message, cookie: resp.data.cookie };
@@ -43,14 +42,19 @@ function isRateLimited(err) {
         (typeof data?.msg === "string" && data.msg.includes("频繁")) ||
         (typeof data?.message === "string" && data.message.includes("频繁")));
 }
+// 没有 response（请求根本没到、或者到了但没收到回应）通常意味着网络本身有问题——
+// 超时、断网、待机没醒透之类的，跟"服务器明确拒绝了"（限流）性质不一样，得分开处理
+function isNetworkError(err) {
+    return !err.response;
+}
 async function searchCandidates(cookie, track, limit = 5) {
     const keyword = `${track.name} ${track.artists[0] ?? ""}`;
     const maxAttempts = 4;
-    let lastWasRateLimited = false;
+    let lastFailureKind = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
         try {
-            const resp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/search`, {
+            const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/search`, {
                 params: { keywords: keyword, limit, cookie, timestamp: Date.now() },
             });
             // 网易云接口有时候 HTTP 200 但 body 里的 code 字段才是真实状态（比如 -462 是需要验证码，
@@ -75,11 +79,12 @@ async function searchCandidates(cookie, track, limit = 5) {
                     score: (0, match_1.scoreCandidate)(track, s.name, artistNames),
                 };
             });
-            return { candidates: candidates.sort((a, b) => b.score - a.score), rateLimited: false };
+            return { candidates: candidates.sort((a, b) => b.score - a.score), failureKind: null };
         }
         catch (err) {
             const rateLimited = isRateLimited(err);
-            lastWasRateLimited = rateLimited;
+            const networkError = !rateLimited && isNetworkError(err);
+            lastFailureKind = rateLimited ? "rateLimited" : networkError ? "network" : null;
             if (rateLimited) {
                 currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
                 (0, logger_1.log)("warn", `触发网易云限流，节流间隔拉长到 ${currentDelayMs}ms: ${keyword}`);
@@ -88,26 +93,71 @@ async function searchCandidates(cookie, track, limit = 5) {
                 httpStatus: err.response?.status,
                 responseData: err.response?.data,
                 message: err.message,
-                rateLimited,
+                failureKind: lastFailureKind,
                 currentDelayMs,
             });
         }
     }
     (0, logger_1.log)("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`, { currentDelayMs });
-    // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；rateLimited 交给上层判断要不要整体中止
-    return { candidates: [], rateLimited: lastWasRateLimited };
+    // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；failureKind 交给上层判断要不要整体中止
+    return { candidates: [], failureKind: lastFailureKind };
 }
-async function createPlaylist(cookie, name) {
-    const resp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/create`, {
+async function getCurrentUserId(cookie) {
+    const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/login/status`, {
+        params: { cookie, timestamp: Date.now() },
+    });
+    return resp.data?.data?.profile?.userId ?? resp.data?.profile?.userId ?? null;
+}
+/**
+ * 按名字找当前用户已有的歌单，找到了返回它的 id，找不到返回 null。
+ * 用来判断"这次导入该新建歌单，还是往已经建过的同名歌单里加"。
+ */
+async function findPlaylistByName(cookie, name) {
+    const uid = await getCurrentUserId(cookie);
+    if (!uid) {
+        (0, logger_1.log)("warn", "拿不到当前用户 uid，没法按名字查已有歌单，会直接新建");
+        return null;
+    }
+    const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/user/playlist`, {
+        params: { uid, cookie, timestamp: Date.now() },
+    });
+    const playlists = resp.data?.playlist ?? [];
+    const found = playlists.find((p) => p.name === name);
+    return found ? found.id : null;
+}
+/**
+ * 拉一个歌单里所有曲目的网易云 id，用来导入前过滤掉已经在里面的歌，避免重复加入。
+ * 用 /playlist/track/all 而不是 /playlist/detail，后者对超过一定数量的歌单会截断。
+ */
+async function getPlaylistTrackIds(cookie, playlistId) {
+    const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/track/all`, {
+        params: { id: playlistId, cookie, timestamp: Date.now() },
+    });
+    const songs = resp.data?.songs ?? [];
+    return new Set(songs.map((s) => s.id));
+}
+/**
+ * 找同名歌单就复用（顺便把里面已有的曲目 id 拉出来去重），找不到就新建一个空的。
+ */
+async function getOrCreatePlaylist(cookie, name) {
+    const existingId = await findPlaylistByName(cookie, name);
+    if (existingId) {
+        (0, logger_1.log)("info", `找到同名歌单，复用: ${name} (id=${existingId})`);
+        const existingTrackIds = await getPlaylistTrackIds(cookie, existingId);
+        return { playlistId: existingId, existingTrackIds, reused: true };
+    }
+    const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/create`, {
         params: { name, cookie, timestamp: Date.now() },
     });
-    return resp.data.id ?? resp.data.playlist.id;
+    const playlistId = resp.data.id ?? resp.data.playlist.id;
+    (0, logger_1.log)("info", `没找到同名歌单，新建: ${name} (id=${playlistId})`);
+    return { playlistId, existingTrackIds: new Set(), reused: false };
 }
 async function addTracksToPlaylist(cookie, playlistId, trackIds) {
     const chunkSize = 100;
     for (let i = 0; i < trackIds.length; i += chunkSize) {
         const chunk = trackIds.slice(i, i + chunkSize);
-        await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/tracks`, {
+        await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/tracks`, {
             params: { op: "add", pid: playlistId, tracks: chunk.join(","), cookie, timestamp: Date.now() },
         });
         await new Promise((r) => setTimeout(r, 500));

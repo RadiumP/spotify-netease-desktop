@@ -22,9 +22,6 @@ var __importStar = (this && this.__importStar) || function (mod) {
     __setModuleDefault(result, mod);
     return result;
 };
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loginWithBrowser = loginWithBrowser;
 exports.refreshAccessToken = refreshAccessToken;
@@ -38,7 +35,7 @@ exports.refreshAccessToken = refreshAccessToken;
  */
 const http = __importStar(require("http"));
 const crypto = __importStar(require("crypto"));
-const axios_1 = __importDefault(require("axios"));
+const httpClient_1 = require("../httpClient");
 const electron_1 = require("electron");
 const types_1 = require("../../shared/types");
 const REDIRECT_PORT = 8888;
@@ -99,7 +96,7 @@ function waitForCallback(state) {
 }
 async function exchangeCodeForToken(clientId, code, codeVerifier) {
     try {
-        const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
+        const resp = await httpClient_1.http.post("https://accounts.spotify.com/api/token", new URLSearchParams({
             grant_type: "authorization_code",
             code,
             redirect_uri: types_1.SPOTIFY_REDIRECT_URI,
@@ -130,7 +127,7 @@ async function loginWithBrowser(clientId) {
 }
 async function refreshAccessToken(clientId, refreshToken) {
     try {
-        const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
+        const resp = await httpClient_1.http.post("https://accounts.spotify.com/api/token", new URLSearchParams({
             grant_type: "refresh_token",
             refresh_token: refreshToken,
             client_id: clientId,

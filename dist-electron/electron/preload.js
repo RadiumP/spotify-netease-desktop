@@ -19,6 +19,14 @@ const api = {
             electron_1.ipcRenderer.removeListener(types_1.IPC.matchProgress, listener);
         };
     },
+    // 每首歌处理完就会推一条，用来实时更新界面上的表格，不用等全部跑完
+    onMatchResult: (cb) => {
+        const listener = (_e, payload) => cb(payload);
+        electron_1.ipcRenderer.on(types_1.IPC.matchResult, listener);
+        return () => {
+            electron_1.ipcRenderer.removeListener(types_1.IPC.matchResult, listener);
+        };
+    },
     importToNetease: (matches, playlistName) => electron_1.ipcRenderer.invoke(types_1.IPC.importToNetease, matches, playlistName),
     openLogFolder: () => electron_1.ipcRenderer.invoke(types_1.IPC.openLogFolder),
 };

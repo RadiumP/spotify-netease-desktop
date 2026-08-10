@@ -16,6 +16,7 @@ exports.IPC = {
     exportAndMatch: "flow:export-and-match",
     checkpointStatus: "flow:checkpoint-status",
     matchProgress: "flow:match-progress", // main -> renderer 推送
+    matchResult: "flow:match-result", // main -> renderer 推送，每首歌处理完就推一条
     importToNetease: "flow:import",
     openLogFolder: "log:open-folder",
 };

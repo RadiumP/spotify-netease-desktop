@@ -82,90 +82,143 @@ function registerIpcHandlers() {
         const cookie = (0, config_1.loadCookie)();
         if (!cookie)
             throw new Error("还没登录网易云，请先扫码登录");
-        (0, logger_1.log)("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId, resume });
-        const tracks = await (0, spotify_1.fetchSpotifyPlaylist)(config);
-        (0, logger_1.log)("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
-        // 断点续传：已经处理过的曲目直接复用结果，不用重新打接口
-        const previousResults = resume ? (0, config_1.loadCheckpoint)(config.spotifyPlaylistId) : null;
-        const doneMap = new Map();
-        if (previousResults) {
-            for (const r of previousResults)
-                doneMap.set(r.spotifyTrack.spotifyId, r);
-            (0, logger_1.log)("info", `从断点继续，已有 ${doneMap.size} 首处理过`);
-        }
-        else if (!resume) {
-            (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
-        }
-        const results = [];
-        const RATE_LIMIT_ABORT_THRESHOLD = 6;
-        let consecutiveRateLimited = 0;
-        for (let i = 0; i < tracks.length; i++) {
-            const track = tracks[i];
-            const cached = doneMap.get(track.spotifyId);
-            if (cached) {
-                results.push(cached);
+        // 跑起来可能要好几分钟到几十分钟，别让系统中途待机把网络连接搞断。
+        // 只挡"系统休眠"，屏幕该黑还是会黑，不影响省电，也不会一直常亮费电
+        const blockerId = electron_1.powerSaveBlocker.start("prevent-app-suspension");
+        (0, logger_1.log)("info", "开始导出并匹配，已阻止系统休眠", { playlistId: config.spotifyPlaylistId, resume });
+        try {
+            const tracks = await (0, spotify_1.fetchSpotifyPlaylist)(config);
+            (0, logger_1.log)("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
+            // 断点续传：已经处理过的曲目直接复用结果，不用重新打接口
+            const previousResults = resume ? (0, config_1.loadCheckpoint)(config.spotifyPlaylistId) : null;
+            const doneMap = new Map();
+            if (previousResults) {
+                for (const r of previousResults)
+                    doneMap.set(r.spotifyTrack.spotifyId, r);
+                (0, logger_1.log)("info", `从断点继续，已有 ${doneMap.size} 首处理过`);
+            }
+            else if (!resume) {
+                (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
+            }
+            const results = [];
+            const RATE_LIMIT_ABORT_THRESHOLD = 6; // 限流：网易云还在正常应答，只是让你慢点，多等几首再判断
+            const NETWORK_ERROR_ABORT_THRESHOLD = 3; // 网络问题：请求根本没通，大概率是断网/待机/连接死了，快点判断
+            let consecutiveRateLimited = 0;
+            let consecutiveNetworkErrors = 0;
+            let aborted = false;
+            let abortReason;
+            for (let i = 0; i < tracks.length; i++) {
+                const track = tracks[i];
+                const cached = doneMap.get(track.spotifyId);
+                if (cached) {
+                    results.push(cached);
+                    mainWindow?.webContents.send(types_1.IPC.matchResult, cached);
+                    mainWindow?.webContents.send(types_1.IPC.matchProgress, {
+                        done: i + 1,
+                        total: tracks.length,
+                        currentTrackName: track.name,
+                    });
+                    continue;
+                }
+                const { candidates, failureKind } = await (0, netease_1.searchCandidates)(cookie, track);
+                const best = candidates[0];
+                consecutiveRateLimited = failureKind === "rateLimited" ? consecutiveRateLimited + 1 : 0;
+                consecutiveNetworkErrors = failureKind === "network" ? consecutiveNetworkErrors + 1 : 0;
+                if (!best) {
+                    (0, logger_1.log)("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
+                }
+                const match = {
+                    spotifyTrack: track,
+                    candidates,
+                    selectedNeteaseId: best && best.score >= match_1.MATCH_THRESHOLD ? best.id : null,
+                    status: !best ? "notfound" : best.score >= match_1.MATCH_THRESHOLD ? "matched" : "uncertain",
+                };
+                results.push(match);
+                // 每首处理完立刻推给界面，不用等全部跑完才看到结果
+                mainWindow?.webContents.send(types_1.IPC.matchResult, match);
+                // 每首都存一下断点，中途崩了/被限流中止了也不会丢进度
+                (0, config_1.saveCheckpoint)(config.spotifyPlaylistId, results);
                 mainWindow?.webContents.send(types_1.IPC.matchProgress, {
                     done: i + 1,
                     total: tracks.length,
                     currentTrackName: track.name,
                 });
-                continue;
+                if (consecutiveNetworkErrors >= NETWORK_ERROR_ABORT_THRESHOLD) {
+                    aborted = true;
+                    abortReason =
+                        `连续 ${consecutiveNetworkErrors} 首歌请求都没连上网易云接口，看起来是网络断了` +
+                            `（比如电脑刚从待机唤醒、断网、或者 VPN 断开）。已经匹配到的 ${results.length} 首已经` +
+                            `可以直接导入，剩下的等网络恢复了重新点"导出并匹配"会自动接着跑`;
+                    (0, logger_1.log)("error", `连续 ${consecutiveNetworkErrors} 首请求没通，判断网络断了，自动暂停`);
+                    break;
+                }
+                if (consecutiveRateLimited >= RATE_LIMIT_ABORT_THRESHOLD) {
+                    aborted = true;
+                    abortReason =
+                        `已经连续 ${consecutiveRateLimited} 首歌搜索都被网易云限流拒绝，看起来是被暂时限制访问了。` +
+                            `已经匹配到的 ${results.length} 首已经可以直接导入，剩下的建议先歇一会儿（几十分钟到几小时不等）` +
+                            `再重新点"导出并匹配"接着跑`;
+                    (0, logger_1.log)("error", `连续 ${consecutiveRateLimited} 首触发限流，自动暂停`);
+                    break;
+                }
             }
-            const { candidates, rateLimited } = await (0, netease_1.searchCandidates)(cookie, track);
-            const best = candidates[0];
-            if (rateLimited) {
-                consecutiveRateLimited++;
+            if (!aborted) {
+                // 顺利跑完，断点就没用了，清掉
+                (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
             }
-            else {
-                consecutiveRateLimited = 0;
-            }
-            if (!best) {
-                (0, logger_1.log)("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
-            }
-            results.push({
-                spotifyTrack: track,
-                candidates,
-                selectedNeteaseId: best && best.score >= match_1.MATCH_THRESHOLD ? best.id : null,
-                status: !best ? "notfound" : best.score >= match_1.MATCH_THRESHOLD ? "matched" : "uncertain",
+            (0, logger_1.log)("info", aborted ? "匹配阶段被自动暂停" : "匹配阶段完成", {
+                total: results.length,
+                matched: results.filter((r) => r.status === "matched").length,
+                uncertain: results.filter((r) => r.status === "uncertain").length,
+                notfound: results.filter((r) => r.status === "notfound").length,
+                aborted,
             });
-            // 每首都存一下断点，中途崩了/被限流中止了也不会丢进度
-            (0, config_1.saveCheckpoint)(config.spotifyPlaylistId, results);
-            mainWindow?.webContents.send(types_1.IPC.matchProgress, {
-                done: i + 1,
-                total: tracks.length,
-                currentTrackName: track.name,
-            });
-            if (consecutiveRateLimited >= RATE_LIMIT_ABORT_THRESHOLD) {
-                (0, logger_1.log)("error", `连续 ${consecutiveRateLimited} 首触发限流，判断为被网易云暂时封禁，提前中止`);
-                throw new Error(`已经连续 ${consecutiveRateLimited} 首歌搜索都被网易云限流拒绝，看起来是被暂时限制访问了，` +
-                    `继续跑也没用。已经匹配到的 ${results.length} 首进度已经保存，建议先歇一会儿（几十分钟到几小时不等）` +
-                    `再重新点"导出并匹配"，会自动从这里接着跑，不用重新开始`);
-            }
+            return { results, aborted, abortReason };
         }
-        // 顺利跑完，断点就没用了，清掉
-        (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
-        (0, logger_1.log)("info", "匹配阶段完成", {
-            total: results.length,
-            matched: results.filter((r) => r.status === "matched").length,
-            uncertain: results.filter((r) => r.status === "uncertain").length,
-            notfound: results.filter((r) => r.status === "notfound").length,
-        });
-        return results;
+        finally {
+            electron_1.powerSaveBlocker.stop(blockerId);
+            (0, logger_1.log)("info", "已解除系统休眠阻止");
+        }
     });
     electron_1.ipcMain.handle(types_1.IPC.importToNetease, async (_e, matches, playlistName) => {
         const cookie = (0, config_1.loadCookie)();
         if (!cookie)
             throw new Error("还没登录网易云，请先扫码登录");
-        const toImport = matches.filter((m) => m.selectedNeteaseId !== null);
-        const unmatched = matches.filter((m) => m.selectedNeteaseId === null);
-        const playlistId = await (0, netease_1.createPlaylist)(cookie, playlistName);
-        await (0, netease_1.addTracksToPlaylist)(cookie, playlistId, toImport.map((m) => m.selectedNeteaseId));
-        return {
-            playlistId,
-            matchedCount: toImport.length,
-            unmatchedCount: unmatched.length,
-            unmatchedTracks: unmatched.map((m) => m.spotifyTrack),
-        };
+        const blockerId = electron_1.powerSaveBlocker.start("prevent-app-suspension");
+        try {
+            const toImport = matches.filter((m) => m.selectedNeteaseId !== null);
+            const unmatched = matches.filter((m) => m.selectedNeteaseId === null);
+            const { playlistId, existingTrackIds, reused } = await (0, netease_1.getOrCreatePlaylist)(cookie, playlistName);
+            // 去重：跳过"歌单里已经有的"和"这一批里选中了同一首网易云曲目"这两种重复
+            const seenInThisBatch = new Set();
+            const idsToAdd = [];
+            for (const m of toImport) {
+                const id = m.selectedNeteaseId;
+                if (existingTrackIds.has(id) || seenInThisBatch.has(id))
+                    continue;
+                seenInThisBatch.add(id);
+                idsToAdd.push(id);
+            }
+            const skippedDuplicates = toImport.length - idsToAdd.length;
+            (0, logger_1.log)("info", "开始导入网易云", {
+                playlistId,
+                reused,
+                toAdd: idsToAdd.length,
+                skippedDuplicates,
+            });
+            await (0, netease_1.addTracksToPlaylist)(cookie, playlistId, idsToAdd);
+            return {
+                playlistId,
+                matchedCount: idsToAdd.length,
+                unmatchedCount: unmatched.length,
+                unmatchedTracks: unmatched.map((m) => m.spotifyTrack),
+                duplicateCount: skippedDuplicates,
+                reusedExistingPlaylist: reused,
+            };
+        }
+        finally {
+            electron_1.powerSaveBlocker.stop(blockerId);
+        }
     });
 }
 electron_1.app.whenReady().then(async () => {

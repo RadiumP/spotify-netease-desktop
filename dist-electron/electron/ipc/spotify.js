@@ -1,10 +1,7 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchSpotifyPlaylist = fetchSpotifyPlaylist;
-const axios_1 = __importDefault(require("axios"));
+const httpClient_1 = require("../httpClient");
 const config_1 = require("../config");
 const spotifyAuth_1 = require("./spotifyAuth");
 /**
@@ -51,7 +48,7 @@ async function fetchSpotifyPlaylist(config) {
     while (url) {
         let resp;
         try {
-            resp = await axios_1.default.get(url, {
+            resp = await httpClient_1.http.get(url, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
         }

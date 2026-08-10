@@ -41,6 +41,13 @@ const BASE_DELAY_MS = 600;
 const MAX_DELAY_MS = 20_000;
 let currentDelayMs = BASE_DELAY_MS;
 
+// 每次实际等待的时间不用固定值，在当前节流间隔基础上加随机抖动（1.0x ~ 1.8x），
+// 别让请求节奏太规律——规律的间隔本身也是容易被识别成机器人请求的特征之一
+function randomizedDelay(baseMs: number): number {
+  const jitterFactor = 1 + Math.random() * 0.8; // 1.0 ~ 1.8
+  return Math.round(baseMs * jitterFactor);
+}
+
 function isRateLimited(err: any): boolean {
   const data = err.response?.data;
   return (
@@ -76,7 +83,7 @@ export async function searchCandidates(
   let lastFailureKind: FailureKind = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
+    await sleep(randomizedDelay(currentDelayMs)); // 每次真正发请求前都按当前节流间隔（带随机抖动）等一下
 
     try {
       const resp = await http.get(`${NETEASE_API_BASE}/search`, {
@@ -134,11 +141,69 @@ export async function searchCandidates(
   return { candidates: [], failureKind: lastFailureKind };
 }
 
-export async function createPlaylist(cookie: string, name: string): Promise<number> {
+async function getCurrentUserId(cookie: string): Promise<number | null> {
+  const resp = await http.get(`${NETEASE_API_BASE}/login/status`, {
+    params: { cookie, timestamp: Date.now() },
+  });
+  return resp.data?.data?.profile?.userId ?? resp.data?.profile?.userId ?? null;
+}
+
+/**
+ * 按名字找当前用户已有的歌单，找到了返回它的 id，找不到返回 null。
+ * 用来判断"这次导入该新建歌单，还是往已经建过的同名歌单里加"。
+ */
+export async function findPlaylistByName(cookie: string, name: string): Promise<number | null> {
+  const uid = await getCurrentUserId(cookie);
+  if (!uid) {
+    log("warn", "拿不到当前用户 uid，没法按名字查已有歌单，会直接新建");
+    return null;
+  }
+
+  const resp = await http.get(`${NETEASE_API_BASE}/user/playlist`, {
+    params: { uid, cookie, timestamp: Date.now() },
+  });
+
+  const playlists = resp.data?.playlist ?? [];
+  const found = playlists.find((p: any) => p.name === name);
+  return found ? found.id : null;
+}
+
+/**
+ * 拉一个歌单里所有曲目的网易云 id，用来导入前过滤掉已经在里面的歌，避免重复加入。
+ * 用 /playlist/track/all 而不是 /playlist/detail，后者对超过一定数量的歌单会截断。
+ */
+export async function getPlaylistTrackIds(cookie: string, playlistId: number): Promise<Set<number>> {
+  const resp = await http.get(`${NETEASE_API_BASE}/playlist/track/all`, {
+    params: { id: playlistId, cookie, timestamp: Date.now() },
+  });
+  const songs = resp.data?.songs ?? [];
+  return new Set(songs.map((s: any) => s.id));
+}
+
+export interface TargetPlaylist {
+  playlistId: number;
+  existingTrackIds: Set<number>;
+  reused: boolean; // true = 用的是已有同名歌单，false = 新建的
+}
+
+/**
+ * 找同名歌单就复用（顺便把里面已有的曲目 id 拉出来去重），找不到就新建一个空的。
+ */
+export async function getOrCreatePlaylist(cookie: string, name: string): Promise<TargetPlaylist> {
+  const existingId = await findPlaylistByName(cookie, name);
+
+  if (existingId) {
+    log("info", `找到同名歌单，复用: ${name} (id=${existingId})`);
+    const existingTrackIds = await getPlaylistTrackIds(cookie, existingId);
+    return { playlistId: existingId, existingTrackIds, reused: true };
+  }
+
   const resp = await http.get(`${NETEASE_API_BASE}/playlist/create`, {
     params: { name, cookie, timestamp: Date.now() },
   });
-  return resp.data.id ?? resp.data.playlist.id;
+  const playlistId = resp.data.id ?? resp.data.playlist.id;
+  log("info", `没找到同名歌单，新建: ${name} (id=${playlistId})`);
+  return { playlistId, existingTrackIds: new Set(), reused: false };
 }
 
 export async function addTracksToPlaylist(

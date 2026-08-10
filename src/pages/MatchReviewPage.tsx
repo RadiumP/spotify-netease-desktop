@@ -195,8 +195,8 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
 
           {pausedReason && (
             <p className="hint">
-              注意：现在导入只会建一个包含当前这 {matches.length} 首的歌单。剩下的歌等接着跑完之后，
-              需要再导入一次，会是另一个新歌单，不会自动合并进这个。
+              现在导入会加进网易云里同名的歌单（没有就新建），已经在里面的歌会自动跳过不重复加。
+              剩下的接着跑完之后再导入一次就行，不用担心变成两个歌单。
             </p>
           )}
 
@@ -209,7 +209,10 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
       {summary && (
         <div className="summary">
           <p>
-            导入完成：成功 {summary.matchedCount} 首，跳过/未匹配 {summary.unmatchedCount} 首。
+            {summary.reusedExistingPlaylist ? "已加入到已有歌单：" : "已新建歌单并导入："}
+            新增 {summary.matchedCount} 首
+            {summary.duplicateCount > 0 && `，跳过 ${summary.duplicateCount} 首重复（歌单里已经有）`}
+            ，跳过/未匹配 {summary.unmatchedCount} 首。
           </p>
           {summary.unmatchedTracks.length > 0 && (
             <details>

@@ -15,7 +15,7 @@ import {
 import { startNeteaseServer, startNeteaseServerFallback } from "./neteaseServer";
 import { fetchSpotifyPlaylist } from "./ipc/spotify";
 import { loginWithBrowser } from "./ipc/spotifyAuth";
-import { startQrLogin, checkQrLogin, searchCandidates, createPlaylist, addTracksToPlaylist } from "./ipc/netease";
+import { startQrLogin, checkQrLogin, searchCandidates, getOrCreatePlaylist, addTracksToPlaylist } from "./ipc/netease";
 import { MATCH_THRESHOLD } from "./ipc/match";
 import { log, openLogFolder } from "./logger";
 
@@ -206,18 +206,38 @@ function registerIpcHandlers() {
         const toImport = matches.filter((m) => m.selectedNeteaseId !== null);
         const unmatched = matches.filter((m) => m.selectedNeteaseId === null);
 
-        const playlistId = await createPlaylist(cookie, playlistName);
-        await addTracksToPlaylist(
+        const { playlistId, existingTrackIds, reused } = await getOrCreatePlaylist(
           cookie,
-          playlistId,
-          toImport.map((m) => m.selectedNeteaseId as number)
+          playlistName
         );
+
+        // 去重：跳过"歌单里已经有的"和"这一批里选中了同一首网易云曲目"这两种重复
+        const seenInThisBatch = new Set<number>();
+        const idsToAdd: number[] = [];
+        for (const m of toImport) {
+          const id = m.selectedNeteaseId as number;
+          if (existingTrackIds.has(id) || seenInThisBatch.has(id)) continue;
+          seenInThisBatch.add(id);
+          idsToAdd.push(id);
+        }
+        const skippedDuplicates = toImport.length - idsToAdd.length;
+
+        log("info", "开始导入网易云", {
+          playlistId,
+          reused,
+          toAdd: idsToAdd.length,
+          skippedDuplicates,
+        });
+
+        await addTracksToPlaylist(cookie, playlistId, idsToAdd);
 
         return {
           playlistId,
-          matchedCount: toImport.length,
+          matchedCount: idsToAdd.length,
           unmatchedCount: unmatched.length,
           unmatchedTracks: unmatched.map((m) => m.spotifyTrack),
+          duplicateCount: skippedDuplicates,
+          reusedExistingPlaylist: reused,
         };
       } finally {
         powerSaveBlocker.stop(blockerId);

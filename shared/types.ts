@@ -62,6 +62,8 @@ export interface ImportSummary {
   matchedCount: number;
   unmatchedCount: number;
   unmatchedTracks: SpotifyTrack[];
+  duplicateCount: number; // 因为歌单里已经有了 / 这批里重复选中，被跳过没加的数量
+  reusedExistingPlaylist: boolean; // true = 加进了已有的同名歌单，false = 新建的
 }
 
 export interface SpotifyTokenData {
