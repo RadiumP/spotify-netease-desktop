@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppConfig, ImportSummary, MatchProgressEvent, TrackMatch } from "../../shared/types";
 
 interface Props {
@@ -14,10 +14,23 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
   const [importing, setImporting] = useState(false);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pausedReason, setPausedReason] = useState<string | null>(null);
   const [checkpointCount, setCheckpointCount] = useState<number | null>(null);
+
+  // 实时结果用 ref 存一份，避免闭包里拿到过期的 matches；界面显示还是走 onMatchesChange 触发的 state
+  const liveMatchesRef = useRef<TrackMatch[]>([]);
 
   useEffect(() => {
     return window.api.onMatchProgress(setProgress);
+  }, []);
+
+  useEffect(() => {
+    // 每首歌处理完就实时追加到表格里，不用等全部跑完
+    return window.api.onMatchResult((m) => {
+      liveMatchesRef.current = [...liveMatchesRef.current, m];
+      onMatchesChange(liveMatchesRef.current);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -27,16 +40,21 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
 
   async function runExportAndMatch(resume: boolean) {
     setError(null);
+    setPausedReason(null);
     setSummary(null);
     setLoading(true);
     setProgress(null);
+    liveMatchesRef.current = []; // 不管是不是断点续传，流式事件会把该有的（含之前处理过的）都重新推一遍
+    onMatchesChange([]);
     try {
-      const result = await window.api.exportAndMatch(config, resume);
-      onMatchesChange(result);
-      setCheckpointCount(null);
+      const outcome = await window.api.exportAndMatch(config, resume);
+      onMatchesChange(outcome.results); // 用最终结果对齐一次，防止个别流式事件丢失导致的不一致
+      if (outcome.aborted) {
+        setPausedReason(outcome.abortReason ?? "已自动暂停");
+      }
+      setCheckpointCount(outcome.aborted ? outcome.results.length : null);
     } catch (err: any) {
       setError(err?.message ?? String(err));
-      // 中止之后进度还在，刷新一下断点状态，方便展示"继续"按钮
       window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
     } finally {
       setLoading(false);
@@ -107,6 +125,13 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
         </div>
       )}
 
+      {pausedReason && (
+        <div className="checkpoint-box">
+          <p>⏸ 已自动暂停：{pausedReason}</p>
+          <p>下面表格里已经是目前搜到的部分，可以先导入这些，剩下的等会儿再接着跑。</p>
+        </div>
+      )}
+
       {error && (
         <div className="error-box">
           <p className="error">{error}</p>
@@ -168,7 +193,14 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
             </tbody>
           </table>
 
-          <button onClick={runImport} disabled={importing}>
+          {pausedReason && (
+            <p className="hint">
+              注意：现在导入只会建一个包含当前这 {matches.length} 首的歌单。剩下的歌等接着跑完之后，
+              需要再导入一次，会是另一个新歌单，不会自动合并进这个。
+            </p>
+          )}
+
+          <button onClick={runImport} disabled={importing || loading}>
             {importing ? "正在导入..." : `导入到网易云《${config.neteasePlaylistName}》`}
           </button>
         </>

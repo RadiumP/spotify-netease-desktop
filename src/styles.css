@@ -143,6 +143,11 @@ button:disabled {
   border-radius: 6px;
 }
 
+.hint {
+  font-size: 12px;
+  color: #888;
+}
+
 .spotify-login-box .hint {
   font-size: 12px;
   color: #666;

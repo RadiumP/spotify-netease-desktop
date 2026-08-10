@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AppConfig, IPC, MatchProgressEvent, TrackMatch } from "../shared/types";
+import { AppConfig, ExportMatchOutcome, IPC, MatchProgressEvent, TrackMatch } from "../shared/types";
 
 const api = {
   loadConfig: (): Promise<AppConfig> => ipcRenderer.invoke(IPC.loadConfig),
@@ -12,7 +12,7 @@ const api = {
   startNeteaseLogin: () => ipcRenderer.invoke(IPC.neteaseLoginStart),
   pollNeteaseLogin: (unikey: string) => ipcRenderer.invoke(IPC.neteaseLoginPoll, unikey),
 
-  exportAndMatch: (config: AppConfig, resume: boolean): Promise<TrackMatch[]> =>
+  exportAndMatch: (config: AppConfig, resume: boolean): Promise<ExportMatchOutcome> =>
     ipcRenderer.invoke(IPC.exportAndMatch, config, resume),
 
   checkpointStatus: (playlistId: string): Promise<{ count: number } | null> =>
@@ -23,6 +23,15 @@ const api = {
     ipcRenderer.on(IPC.matchProgress, listener);
     return () => {
       ipcRenderer.removeListener(IPC.matchProgress, listener);
+    };
+  },
+
+  // 每首歌处理完就会推一条，用来实时更新界面上的表格，不用等全部跑完
+  onMatchResult: (cb: (m: TrackMatch) => void) => {
+    const listener = (_e: unknown, payload: TrackMatch) => cb(payload);
+    ipcRenderer.on(IPC.matchResult, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.matchResult, listener);
     };
   },
 

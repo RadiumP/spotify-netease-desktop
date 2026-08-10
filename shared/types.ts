@@ -42,6 +42,15 @@ export interface MatchProgressEvent {
   currentTrackName: string;
 }
 
+// exportAndMatch 跑完（或者自动暂停）之后的结果。以前是"失败就整批 throw 掉"，
+// 现在改成正常返回，aborted=true 表示是自动暂停（限流/网络问题），results 里已经
+// 匹配到的部分照样可以拿去导入，不用等真正跑完
+export interface ExportMatchOutcome {
+  results: TrackMatch[];
+  aborted: boolean;
+  abortReason?: string;
+}
+
 // 网易云登录状态：801 等待扫码 / 802 已扫码待确认 / 803 登录成功 / 800 二维码过期
 export interface NeteaseLoginStatus {
   code: 800 | 801 | 802 | 803;
@@ -73,6 +82,7 @@ export const IPC = {
   exportAndMatch: "flow:export-and-match",
   checkpointStatus: "flow:checkpoint-status",
   matchProgress: "flow:match-progress", // main -> renderer 推送
+  matchResult: "flow:match-result", // main -> renderer 推送，每首歌处理完就推一条
   importToNetease: "flow:import",
   openLogFolder: "log:open-folder",
 } as const;
