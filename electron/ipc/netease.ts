@@ -3,6 +3,7 @@ import { NETEASE_API_BASE } from "../neteaseServer";
 import { NeteaseCandidate, NeteaseLoginStatus, SpotifyTrack } from "../../shared/types";
 import { scoreCandidate } from "./match";
 import { log } from "../logger";
+import { isPauseRequested } from "../pauseState";
 
 export interface QrLoginSession {
   unikey: string;
@@ -31,8 +32,18 @@ export async function checkQrLogin(
   return { code: resp.data.code, message: resp.data.message, cookie: resp.data.cookie };
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+// 可中断的等待：正常等到时间就结束，但每 150ms 会检查一次有没有被要求暂停，
+// 有的话立刻提前结束，不用傻等完整个延迟时间
+function interruptibleSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const checkInterval = setInterval(() => {
+      if (isPauseRequested() || Date.now() - start >= ms) {
+        clearInterval(checkInterval);
+        resolve();
+      }
+    }, 150);
+  });
 }
 
 // 自适应节流：正常情况下按 BASE_DELAY 走，一旦命中限流就翻倍拉长后续所有请求的间隔，
@@ -70,6 +81,8 @@ export interface SearchResult {
   candidates: NeteaseCandidate[];
   // 彻底失败时是哪种原因；null 表示没失败（哪怕搜索结果是空的，只要请求本身成功就是 null）
   failureKind: FailureKind;
+  // true = 是因为用户点了暂停被提前打断的，不是真的搜索失败，上层不该把这首算作"处理过"
+  paused?: boolean;
 }
 
 export async function searchCandidates(
@@ -83,11 +96,27 @@ export async function searchCandidates(
   let lastFailureKind: FailureKind = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await sleep(randomizedDelay(currentDelayMs)); // 每次真正发请求前都按当前节流间隔（带随机抖动）等一下
+    if (isPauseRequested()) {
+      return { candidates: [], failureKind: null, paused: true };
+    }
+
+    await interruptibleSleep(randomizedDelay(currentDelayMs)); // 节流等待（带随机抖动），随时能被暂停打断
+
+    if (isPauseRequested()) {
+      return { candidates: [], failureKind: null, paused: true };
+    }
+
+    // 等待期间没被暂停，但请求可能正好卡在网络里迟迟不返回——起个轮询，
+    // 一旦这时候点了暂停就直接把这个请求砍掉，不用等它超时或者重试完
+    const controller = new AbortController();
+    const abortWatcher = setInterval(() => {
+      if (isPauseRequested()) controller.abort();
+    }, 150);
 
     try {
       const resp = await http.get(`${NETEASE_API_BASE}/search`, {
         params: { keywords: keyword, limit, cookie, timestamp: Date.now() },
+        signal: controller.signal,
       });
 
       // 网易云接口有时候 HTTP 200 但 body 里的 code 字段才是真实状态（比如 -462 是需要验证码，
@@ -117,6 +146,12 @@ export async function searchCandidates(
 
       return { candidates: candidates.sort((a, b) => b.score - a.score), failureKind: null };
     } catch (err: any) {
+      if (isPauseRequested()) {
+        // 是被我们自己 abort 掉的（或者 abort 和真实网络错误前后脚发生），
+        // 当成暂停处理，不要算进限流/网络错误的失败统计里
+        return { candidates: [], failureKind: null, paused: true };
+      }
+
       const rateLimited = isRateLimited(err);
       const networkError = !rateLimited && isNetworkError(err);
       lastFailureKind = rateLimited ? "rateLimited" : networkError ? "network" : null;
@@ -133,6 +168,8 @@ export async function searchCandidates(
         failureKind: lastFailureKind,
         currentDelayMs,
       });
+    } finally {
+      clearInterval(abortWatcher);
     }
   }
 

@@ -15,6 +15,8 @@ const api = {
   exportAndMatch: (config: AppConfig, resume: boolean): Promise<ExportMatchOutcome> =>
     ipcRenderer.invoke(IPC.exportAndMatch, config, resume),
 
+  pauseMatch: (): Promise<void> => ipcRenderer.invoke(IPC.pauseMatch),
+
   checkpointStatus: (playlistId: string): Promise<{ count: number } | null> =>
     ipcRenderer.invoke(IPC.checkpointStatus, playlistId),
 

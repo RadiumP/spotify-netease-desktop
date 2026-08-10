@@ -17,9 +17,13 @@ import { fetchSpotifyPlaylist } from "./ipc/spotify";
 import { loginWithBrowser } from "./ipc/spotifyAuth";
 import { startQrLogin, checkQrLogin, searchCandidates, getOrCreatePlaylist, addTracksToPlaylist } from "./ipc/netease";
 import { MATCH_THRESHOLD } from "./ipc/match";
+import { requestPause, clearPause, isPauseRequested } from "./pauseState";
 import { log, openLogFolder } from "./logger";
 
 let mainWindow: BrowserWindow | null = null;
+// 防止意外并发跑两个导出/匹配任务（比如前端 bug 导致重复触发）——两边同时搜索同一个歌单，
+// 会导致结果重复出现、限流更容易触发。前端已经会在跑的时候禁用按钮，这里是兜底的第二道保险。
+let matchInProgress = false;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -75,11 +79,24 @@ function registerIpcHandlers() {
     return checkpoint ? { count: checkpoint.length } : null;
   });
 
+  ipcMain.handle(IPC.pauseMatch, () => {
+    if (matchInProgress) {
+      requestPause();
+      log("info", "用户点击了暂停按钮");
+    }
+  });
+
   ipcMain.handle(
     IPC.exportAndMatch,
     async (_e, config: AppConfig, resume: boolean): Promise<ExportMatchOutcome> => {
       const cookie = loadCookie();
       if (!cookie) throw new Error("还没登录网易云，请先扫码登录");
+
+      if (matchInProgress) {
+        throw new Error("已经有一个导出/匹配任务在跑了，等它结束或者自动暂停之后再试");
+      }
+      matchInProgress = true;
+      clearPause(); // 保险起见，开始新任务前把上一轮可能残留的暂停标记清掉
 
       // 跑起来可能要好几分钟到几十分钟，别让系统中途待机把网络连接搞断。
       // 只挡"系统休眠"，屏幕该黑还是会黑，不影响省电，也不会一直常亮费电
@@ -120,10 +137,27 @@ function registerIpcHandlers() {
               total: tracks.length,
               currentTrackName: track.name,
             });
+            if (isPauseRequested()) {
+              aborted = true;
+              abortReason = `手动暂停，已经匹配到的 ${results.length} 首已经保存，随时可以点"从上次继续"接着跑`;
+              log("info", "用户手动暂停（回放断点阶段），停止匹配循环");
+              clearPause();
+              saveCheckpoint(config.spotifyPlaylistId, results);
+              break;
+            }
             continue;
           }
 
-          const { candidates, failureKind } = await searchCandidates(cookie, track);
+          const { candidates, failureKind, paused } = await searchCandidates(cookie, track);
+
+          if (paused) {
+            aborted = true;
+            abortReason = `手动暂停，已经匹配到的 ${results.length} 首已经保存，随时可以点"从上次继续"接着跑`;
+            log("info", "用户手动暂停，停止匹配循环（当前这首没搜完，下次会重新搜）");
+            clearPause();
+            break;
+          }
+
           const best = candidates[0];
 
           consecutiveRateLimited = failureKind === "rateLimited" ? consecutiveRateLimited + 1 : 0;
@@ -190,6 +224,8 @@ function registerIpcHandlers() {
         return { results, aborted, abortReason };
       } finally {
         powerSaveBlocker.stop(blockerId);
+        matchInProgress = false;
+        clearPause();
         log("info", "已解除系统休眠阻止");
       }
     }

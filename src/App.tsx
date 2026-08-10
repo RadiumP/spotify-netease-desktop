@@ -17,6 +17,9 @@ export default function App() {
   const [config, setConfig] = useState<AppConfig>(EMPTY_CONFIG);
   const [loggedIn, setLoggedIn] = useState(false);
   const [matches, setMatches] = useState<TrackMatch[]>([]);
+  // 匹配跑起来的时候不让切 tab——切走会导致匹配页组件被卸载重挂，
+  // 界面进度断掉、甚至手滑点两次导致两个搜索循环同时跑，歌曲在列表里重复
+  const [matchRunning, setMatchRunning] = useState(false);
 
   useEffect(() => {
     window.api.loadConfig().then(setConfig);
@@ -36,6 +39,8 @@ export default function App() {
           <button
             key={s.key}
             className={step === s.key ? "step active" : "step"}
+            disabled={matchRunning && s.key !== step}
+            title={matchRunning && s.key !== step ? "匹配正在进行中，跑完/自动暂停之后才能切换" : undefined}
             onClick={() => setStep(s.key)}
           >
             {s.label}
@@ -72,6 +77,7 @@ export default function App() {
             loggedIn={loggedIn}
             matches={matches}
             onMatchesChange={setMatches}
+            onRunningChange={setMatchRunning}
           />
         )}
       </main>

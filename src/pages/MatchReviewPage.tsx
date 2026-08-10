@@ -6,15 +6,23 @@ interface Props {
   loggedIn: boolean;
   matches: TrackMatch[];
   onMatchesChange: (matches: TrackMatch[]) => void;
+  onRunningChange: (running: boolean) => void;
 }
 
-export default function MatchReviewPage({ config, loggedIn, matches, onMatchesChange }: Props) {
+export default function MatchReviewPage({
+  config,
+  loggedIn,
+  matches,
+  onMatchesChange,
+  onRunningChange,
+}: Props) {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<MatchProgressEvent | null>(null);
   const [importing, setImporting] = useState(false);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pausedReason, setPausedReason] = useState<string | null>(null);
+  const [pausing, setPausing] = useState(false);
   const [checkpointCount, setCheckpointCount] = useState<number | null>(null);
 
   // 实时结果用 ref 存一份，避免闭包里拿到过期的 matches；界面显示还是走 onMatchesChange 触发的 state
@@ -43,6 +51,8 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
     setPausedReason(null);
     setSummary(null);
     setLoading(true);
+    onRunningChange(true);
+    setPausing(false);
     setProgress(null);
     liveMatchesRef.current = []; // 不管是不是断点续传，流式事件会把该有的（含之前处理过的）都重新推一遍
     onMatchesChange([]);
@@ -58,6 +68,8 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
       window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
     } finally {
       setLoading(false);
+      setPausing(false);
+      onRunningChange(false);
     }
   }
 
@@ -122,6 +134,19 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
           <span>
             {progress.done}/{progress.total} — {progress.currentTrackName}
           </span>
+          {loading && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={pausing}
+              onClick={async () => {
+                setPausing(true);
+                await window.api.pauseMatch();
+              }}
+            >
+              {pausing ? "正在暂停..." : "暂停"}
+            </button>
+          )}
         </div>
       )}
 

@@ -82,6 +82,7 @@ export const IPC = {
   neteaseLoginStatusCheck: "netease:login-check",
   neteaseIsLoggedIn: "netease:is-logged-in",
   exportAndMatch: "flow:export-and-match",
+  pauseMatch: "flow:pause-match",
   checkpointStatus: "flow:checkpoint-status",
   matchProgress: "flow:match-progress", // main -> renderer 推送
   matchResult: "flow:match-result", // main -> renderer 推送，每首歌处理完就推一条

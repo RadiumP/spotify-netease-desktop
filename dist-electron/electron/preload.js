@@ -11,6 +11,7 @@ const api = {
     startNeteaseLogin: () => electron_1.ipcRenderer.invoke(types_1.IPC.neteaseLoginStart),
     pollNeteaseLogin: (unikey) => electron_1.ipcRenderer.invoke(types_1.IPC.neteaseLoginPoll, unikey),
     exportAndMatch: (config, resume) => electron_1.ipcRenderer.invoke(types_1.IPC.exportAndMatch, config, resume),
+    pauseMatch: () => electron_1.ipcRenderer.invoke(types_1.IPC.pauseMatch),
     checkpointStatus: (playlistId) => electron_1.ipcRenderer.invoke(types_1.IPC.checkpointStatus, playlistId),
     onMatchProgress: (cb) => {
         const listener = (_e, payload) => cb(payload);
