@@ -47,11 +47,13 @@
       "provider": "github"
     },
     "win": {
-      "target": ["nsis"]
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
     },
     "mac": {
       "target": ["dmg", "zip"],
-      "category": "public.app-category.music"
+      "category": "public.app-category.music",
+      "icon": "build/icon.icns"
     }
   }
 }

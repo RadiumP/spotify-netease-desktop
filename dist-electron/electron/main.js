@@ -42,6 +42,7 @@ function createWindow() {
     mainWindow = new electron_1.BrowserWindow({
         width: 1000,
         height: 720,
+        icon: path.join(__dirname, "..", "..", "build", "icon.png"), // 打包后的实际图标由 package.json build.win/mac.icon 决定，这个只影响开发模式下窗口/任务栏显示
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: true,
