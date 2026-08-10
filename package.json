@@ -50,6 +50,12 @@
       "target": ["nsis"],
       "icon": "build/icon.ico"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
     "mac": {
       "target": ["dmg", "zip"],
       "category": "public.app-category.music",
