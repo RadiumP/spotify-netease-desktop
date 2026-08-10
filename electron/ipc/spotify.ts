@@ -1,4 +1,4 @@
-import axios from "axios";
+import { http } from "../httpClient";
 import { AppConfig, SpotifyTrack } from "../../shared/types";
 import { loadSpotifyToken, saveSpotifyToken, clearSpotifyToken } from "../config";
 import { refreshAccessToken } from "./spotifyAuth";
@@ -56,7 +56,7 @@ export async function fetchSpotifyPlaylist(config: AppConfig): Promise<SpotifyTr
   while (url) {
     let resp: any;
     try {
-      resp = await axios.get(url, {
+      resp = await http.get(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
     } catch (err: any) {

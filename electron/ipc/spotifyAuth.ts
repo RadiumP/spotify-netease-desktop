@@ -8,7 +8,7 @@
  */
 import * as http from "http";
 import * as crypto from "crypto";
-import axios from "axios";
+import { http as httpClient } from "../httpClient";
 import { shell } from "electron";
 import { SpotifyTokenData, SPOTIFY_REDIRECT_URI } from "../../shared/types";
 
@@ -82,7 +82,7 @@ async function exchangeCodeForToken(
   codeVerifier: string
 ): Promise<SpotifyTokenData> {
   try {
-    const resp = await axios.post(
+    const resp = await httpClient.post(
       "https://accounts.spotify.com/api/token",
       new URLSearchParams({
         grant_type: "authorization_code",
@@ -125,7 +125,7 @@ export async function refreshAccessToken(
   refreshToken: string
 ): Promise<SpotifyTokenData> {
   try {
-    const resp = await axios.post(
+    const resp = await httpClient.post(
       "https://accounts.spotify.com/api/token",
       new URLSearchParams({
         grant_type: "refresh_token",

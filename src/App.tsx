@@ -47,6 +47,7 @@ export default function App() {
         {step === "settings" && (
           <SettingsPage
             config={config}
+            onChange={(next) => setConfig(next)}
             onSave={async (next) => {
               await window.api.saveConfig(next);
               setConfig(next);

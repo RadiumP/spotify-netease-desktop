@@ -3,11 +3,11 @@ import { AppConfig, SPOTIFY_REDIRECT_URI } from "../../shared/types";
 
 interface Props {
   config: AppConfig;
+  onChange: (config: AppConfig) => void; // 每次输入都立刻同步给父组件，别只存在子组件本地
   onSave: (config: AppConfig) => void;
 }
 
-export default function SettingsPage({ config, onSave }: Props) {
-  const [form, setForm] = useState<AppConfig>(config);
+export default function SettingsPage({ config, onChange, onSave }: Props) {
   const [spotifyLoggedIn, setSpotifyLoggedIn] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -19,25 +19,26 @@ export default function SettingsPage({ config, onSave }: Props) {
     window.api.isSpotifyLoggedIn().then(setSpotifyLoggedIn);
   }, []);
 
-  // 表单任何字段变化后，停顿 800ms 没再输入就自动存盘，不用非得点"保存并下一步"，
-  // 免得中途跳去别的步骤把刚填的 Client ID 弄丢
+  function update<K extends keyof AppConfig>(key: K, value: AppConfig[K]) {
+    // 直接改父组件那份状态，不是子组件自己另存一份——这样切到别的 tab 再切回来，
+    // 显示的还是最新输入的值，不会因为组件重新挂载就"回退"成旧数据
+    onChange({ ...config, [key]: value });
+  }
+
+  // config 变化后停顿 800ms 没再输入就自动落盘，不用非得点"保存并下一步"
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
     const timer = setTimeout(() => {
-      window.api.saveConfig(form).then(() => {
+      window.api.saveConfig(config).then(() => {
         setAutoSaved(true);
         setTimeout(() => setAutoSaved(false), 1500);
       });
     }, 800);
     return () => clearTimeout(timer);
-  }, [form]);
-
-  function update<K extends keyof AppConfig>(key: K, value: AppConfig[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
-  }
+  }, [config]);
 
   async function copyRedirectUri() {
     await navigator.clipboard.writeText(SPOTIFY_REDIRECT_URI);
@@ -49,8 +50,8 @@ export default function SettingsPage({ config, onSave }: Props) {
     setLoginError(null);
     setLoggingIn(true);
     try {
-      await window.api.saveConfig(form);
-      await window.api.loginSpotify(form);
+      await window.api.saveConfig(config);
+      await window.api.loginSpotify(config);
       setSpotifyLoggedIn(true);
     } catch (err: any) {
       setLoginError(err?.message ?? String(err));
@@ -61,7 +62,7 @@ export default function SettingsPage({ config, onSave }: Props) {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    onSave(form);
+    onSave(config);
   }
 
   return (
@@ -96,7 +97,7 @@ export default function SettingsPage({ config, onSave }: Props) {
       <label>
         Spotify Client ID
         <input
-          value={form.spotifyClientId}
+          value={config.spotifyClientId}
           onChange={(e) => update("spotifyClientId", e.target.value)}
           placeholder="App 详情页里能看到"
         />
@@ -106,7 +107,7 @@ export default function SettingsPage({ config, onSave }: Props) {
         {spotifyLoggedIn ? (
           <p className="ok">✓ 已登录 Spotify</p>
         ) : (
-          <button type="button" onClick={handleSpotifyLogin} disabled={loggingIn || !form.spotifyClientId}>
+          <button type="button" onClick={handleSpotifyLogin} disabled={loggingIn || !config.spotifyClientId}>
             {loggingIn ? "等待浏览器授权..." : "登录 Spotify"}
           </button>
         )}
@@ -116,7 +117,7 @@ export default function SettingsPage({ config, onSave }: Props) {
       <label>
         Spotify 歌单 ID
         <input
-          value={form.spotifyPlaylistId}
+          value={config.spotifyPlaylistId}
           onChange={(e) => update("spotifyPlaylistId", e.target.value)}
           placeholder="歌单分享链接 playlist/ 后面那串，必须是你自己拥有或协作的歌单"
         />
@@ -125,7 +126,7 @@ export default function SettingsPage({ config, onSave }: Props) {
       <label>
         网易云新建歌单名字
         <input
-          value={form.neteasePlaylistName}
+          value={config.neteasePlaylistName}
           onChange={(e) => update("neteasePlaylistName", e.target.value)}
         />
       </label>

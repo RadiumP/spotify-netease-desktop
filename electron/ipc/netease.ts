@@ -1,4 +1,4 @@
-import axios from "axios";
+import { http } from "../httpClient";
 import { NETEASE_API_BASE } from "../neteaseServer";
 import { NeteaseCandidate, NeteaseLoginStatus, SpotifyTrack } from "../../shared/types";
 import { scoreCandidate } from "./match";
@@ -10,12 +10,12 @@ export interface QrLoginSession {
 }
 
 export async function startQrLogin(): Promise<QrLoginSession> {
-  const keyResp = await axios.get(`${NETEASE_API_BASE}/login/qr/key`, {
+  const keyResp = await http.get(`${NETEASE_API_BASE}/login/qr/key`, {
     params: { timestamp: Date.now() },
   });
   const unikey = keyResp.data.data.unikey;
 
-  const createResp = await axios.get(`${NETEASE_API_BASE}/login/qr/create`, {
+  const createResp = await http.get(`${NETEASE_API_BASE}/login/qr/create`, {
     params: { key: unikey, qrimg: true, timestamp: Date.now() },
   });
 
@@ -25,7 +25,7 @@ export async function startQrLogin(): Promise<QrLoginSession> {
 export async function checkQrLogin(
   unikey: string
 ): Promise<NeteaseLoginStatus & { cookie?: string }> {
-  const resp = await axios.get(`${NETEASE_API_BASE}/login/qr/check`, {
+  const resp = await http.get(`${NETEASE_API_BASE}/login/qr/check`, {
     params: { key: unikey, timestamp: Date.now() },
   });
   return { code: resp.data.code, message: resp.data.message, cookie: resp.data.cookie };
@@ -51,9 +51,18 @@ function isRateLimited(err: any): boolean {
   );
 }
 
+// 没有 response（请求根本没到、或者到了但没收到回应）通常意味着网络本身有问题——
+// 超时、断网、待机没醒透之类的，跟"服务器明确拒绝了"（限流）性质不一样，得分开处理
+function isNetworkError(err: any): boolean {
+  return !err.response;
+}
+
+export type FailureKind = "rateLimited" | "network" | null;
+
 export interface SearchResult {
   candidates: NeteaseCandidate[];
-  rateLimited: boolean; // 彻底失败时，是不是因为限流失败的（用来判断要不要整体提前中止）
+  // 彻底失败时是哪种原因；null 表示没失败（哪怕搜索结果是空的，只要请求本身成功就是 null）
+  failureKind: FailureKind;
 }
 
 export async function searchCandidates(
@@ -64,13 +73,13 @@ export async function searchCandidates(
   const keyword = `${track.name} ${track.artists[0] ?? ""}`;
 
   const maxAttempts = 4;
-  let lastWasRateLimited = false;
+  let lastFailureKind: FailureKind = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
 
     try {
-      const resp = await axios.get(`${NETEASE_API_BASE}/search`, {
+      const resp = await http.get(`${NETEASE_API_BASE}/search`, {
         params: { keywords: keyword, limit, cookie, timestamp: Date.now() },
       });
 
@@ -99,10 +108,11 @@ export async function searchCandidates(
         };
       });
 
-      return { candidates: candidates.sort((a, b) => b.score - a.score), rateLimited: false };
+      return { candidates: candidates.sort((a, b) => b.score - a.score), failureKind: null };
     } catch (err: any) {
       const rateLimited = isRateLimited(err);
-      lastWasRateLimited = rateLimited;
+      const networkError = !rateLimited && isNetworkError(err);
+      lastFailureKind = rateLimited ? "rateLimited" : networkError ? "network" : null;
 
       if (rateLimited) {
         currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
@@ -113,19 +123,19 @@ export async function searchCandidates(
         httpStatus: err.response?.status,
         responseData: err.response?.data,
         message: err.message,
-        rateLimited,
+        failureKind: lastFailureKind,
         currentDelayMs,
       });
     }
   }
 
   log("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`, { currentDelayMs });
-  // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；rateLimited 交给上层判断要不要整体中止
-  return { candidates: [], rateLimited: lastWasRateLimited };
+  // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；failureKind 交给上层判断要不要整体中止
+  return { candidates: [], failureKind: lastFailureKind };
 }
 
 export async function createPlaylist(cookie: string, name: string): Promise<number> {
-  const resp = await axios.get(`${NETEASE_API_BASE}/playlist/create`, {
+  const resp = await http.get(`${NETEASE_API_BASE}/playlist/create`, {
     params: { name, cookie, timestamp: Date.now() },
   });
   return resp.data.id ?? resp.data.playlist.id;
@@ -139,7 +149,7 @@ export async function addTracksToPlaylist(
   const chunkSize = 100;
   for (let i = 0; i < trackIds.length; i += chunkSize) {
     const chunk = trackIds.slice(i, i + chunkSize);
-    await axios.get(`${NETEASE_API_BASE}/playlist/tracks`, {
+    await http.get(`${NETEASE_API_BASE}/playlist/tracks`, {
       params: { op: "add", pid: playlistId, tracks: chunk.join(","), cookie, timestamp: Date.now() },
     });
     await new Promise((r) => setTimeout(r, 500));

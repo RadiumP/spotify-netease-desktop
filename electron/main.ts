@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, powerSaveBlocker } from "electron";
 import * as path from "path";
 import { AppConfig, IPC, TrackMatch } from "../shared/types";
 import {
@@ -81,10 +81,14 @@ function registerIpcHandlers() {
       const cookie = loadCookie();
       if (!cookie) throw new Error("还没登录网易云，请先扫码登录");
 
-      log("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId, resume });
+      // 跑起来可能要好几分钟到几十分钟，别让系统中途待机把网络连接搞断。
+      // 只挡"系统休眠"，屏幕该黑还是会黑，不影响省电，也不会一直常亮费电
+      const blockerId = powerSaveBlocker.start("prevent-app-suspension");
+      log("info", "开始导出并匹配，已阻止系统休眠", { playlistId: config.spotifyPlaylistId, resume });
 
-      const tracks = await fetchSpotifyPlaylist(config);
-      log("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
+      try {
+        const tracks = await fetchSpotifyPlaylist(config);
+        log("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
 
       // 断点续传：已经处理过的曲目直接复用结果，不用重新打接口
       const previousResults = resume ? loadCheckpoint(config.spotifyPlaylistId) : null;
@@ -97,8 +101,10 @@ function registerIpcHandlers() {
       }
 
       const results: TrackMatch[] = [];
-      const RATE_LIMIT_ABORT_THRESHOLD = 6;
+      const RATE_LIMIT_ABORT_THRESHOLD = 6; // 限流：网易云还在正常应答，只是让你慢点，多等几首再判断
+      const NETWORK_ERROR_ABORT_THRESHOLD = 3; // 网络问题：请求根本没通，大概率是断网/待机/连接死了，快点判断
       let consecutiveRateLimited = 0;
+      let consecutiveNetworkErrors = 0;
 
       for (let i = 0; i < tracks.length; i++) {
         const track = tracks[i];
@@ -114,14 +120,11 @@ function registerIpcHandlers() {
           continue;
         }
 
-        const { candidates, rateLimited } = await searchCandidates(cookie, track);
+        const { candidates, failureKind } = await searchCandidates(cookie, track);
         const best = candidates[0];
 
-        if (rateLimited) {
-          consecutiveRateLimited++;
-        } else {
-          consecutiveRateLimited = 0;
-        }
+        consecutiveRateLimited = failureKind === "rateLimited" ? consecutiveRateLimited + 1 : 0;
+        consecutiveNetworkErrors = failureKind === "network" ? consecutiveNetworkErrors + 1 : 0;
 
         if (!best) {
           log("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
@@ -142,6 +145,18 @@ function registerIpcHandlers() {
           total: tracks.length,
           currentTrackName: track.name,
         });
+
+        if (consecutiveNetworkErrors >= NETWORK_ERROR_ABORT_THRESHOLD) {
+          log(
+            "error",
+            `连续 ${consecutiveNetworkErrors} 首请求根本没通，判断是网络断了（比如待机、断网），自动暂停`
+          );
+          throw new Error(
+            `连续 ${consecutiveNetworkErrors} 首歌请求都没连上网易云接口，看起来是网络断了` +
+              `（比如电脑刚从待机唤醒、断网、或者 VPN 断开）。已经匹配到的 ${results.length} 首进度` +
+              `已经保存，检查一下网络之后重新点"导出并匹配"会自动从这里接着跑`
+          );
+        }
 
         if (consecutiveRateLimited >= RATE_LIMIT_ABORT_THRESHOLD) {
           log(
@@ -167,6 +182,10 @@ function registerIpcHandlers() {
       });
 
       return results;
+      } finally {
+        powerSaveBlocker.stop(blockerId);
+        log("info", "已解除系统休眠阻止");
+      }
     }
   );
 
@@ -176,22 +195,27 @@ function registerIpcHandlers() {
       const cookie = loadCookie();
       if (!cookie) throw new Error("还没登录网易云，请先扫码登录");
 
-      const toImport = matches.filter((m) => m.selectedNeteaseId !== null);
-      const unmatched = matches.filter((m) => m.selectedNeteaseId === null);
+      const blockerId = powerSaveBlocker.start("prevent-app-suspension");
+      try {
+        const toImport = matches.filter((m) => m.selectedNeteaseId !== null);
+        const unmatched = matches.filter((m) => m.selectedNeteaseId === null);
 
-      const playlistId = await createPlaylist(cookie, playlistName);
-      await addTracksToPlaylist(
-        cookie,
-        playlistId,
-        toImport.map((m) => m.selectedNeteaseId as number)
-      );
+        const playlistId = await createPlaylist(cookie, playlistName);
+        await addTracksToPlaylist(
+          cookie,
+          playlistId,
+          toImport.map((m) => m.selectedNeteaseId as number)
+        );
 
-      return {
-        playlistId,
-        matchedCount: toImport.length,
-        unmatchedCount: unmatched.length,
-        unmatchedTracks: unmatched.map((m) => m.spotifyTrack),
-      };
+        return {
+          playlistId,
+          matchedCount: toImport.length,
+          unmatchedCount: unmatched.length,
+          unmatchedTracks: unmatched.map((m) => m.spotifyTrack),
+        };
+      } finally {
+        powerSaveBlocker.stop(blockerId);
+      }
     }
   );
 }
