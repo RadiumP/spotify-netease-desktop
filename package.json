@@ -4,7 +4,7 @@
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/spotify-netease-desktop.git"
+    "url": "https://github.com/RadiumP/spotify-netease-desktop.git"
   },
   "main": "dist-electron/electron/main.js",
   "scripts": {
