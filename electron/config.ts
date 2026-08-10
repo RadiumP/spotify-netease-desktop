@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { app } from "electron";
-import { AppConfig, SpotifyTokenData } from "../shared/types";
+import { AppConfig, SpotifyTokenData, TrackMatch } from "../shared/types";
 
 const DEFAULT_CONFIG: AppConfig = {
   spotifyClientId: "",
@@ -63,4 +63,34 @@ export function loadSpotifyToken(): SpotifyTokenData | null {
 
 export function saveSpotifyToken(token: SpotifyTokenData): void {
   fs.writeFileSync(spotifyTokenPath(), JSON.stringify(token, null, 2), "utf-8");
+}
+
+export function clearSpotifyToken(): void {
+  const p = spotifyTokenPath();
+  if (fs.existsSync(p)) fs.unlinkSync(p);
+}
+
+function checkpointPath(playlistId: string): string {
+  // 文件名里可能有 / 之类的字符（虽然一般不会），保险起见处理一下
+  const safeId = playlistId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(dataDir(), `checkpoint-${safeId}.json`);
+}
+
+export function loadCheckpoint(playlistId: string): TrackMatch[] | null {
+  const p = checkpointPath(playlistId);
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function saveCheckpoint(playlistId: string, results: TrackMatch[]): void {
+  fs.writeFileSync(checkpointPath(playlistId), JSON.stringify(results), "utf-8");
+}
+
+export function clearCheckpoint(playlistId: string): void {
+  const p = checkpointPath(playlistId);
+  if (fs.existsSync(p)) fs.unlinkSync(p);
 }

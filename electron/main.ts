@@ -1,7 +1,17 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import * as path from "path";
 import { AppConfig, IPC, TrackMatch } from "../shared/types";
-import { loadConfig, saveConfig, loadCookie, saveCookie, loadSpotifyToken, saveSpotifyToken } from "./config";
+import {
+  loadConfig,
+  saveConfig,
+  loadCookie,
+  saveCookie,
+  loadSpotifyToken,
+  saveSpotifyToken,
+  loadCheckpoint,
+  saveCheckpoint,
+  clearCheckpoint,
+} from "./config";
 import { startNeteaseServer, startNeteaseServerFallback } from "./neteaseServer";
 import { fetchSpotifyPlaylist } from "./ipc/spotify";
 import { loginWithBrowser } from "./ipc/spotifyAuth";
@@ -60,49 +70,105 @@ function registerIpcHandlers() {
     return { code: status.code, message: status.message };
   });
 
-  ipcMain.handle(IPC.exportAndMatch, async (_e, config: AppConfig): Promise<TrackMatch[]> => {
-    const cookie = loadCookie();
-    if (!cookie) throw new Error("还没登录网易云，请先扫码登录");
+  ipcMain.handle(IPC.checkpointStatus, (_e, playlistId: string) => {
+    const checkpoint = loadCheckpoint(playlistId);
+    return checkpoint ? { count: checkpoint.length } : null;
+  });
 
-    log("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId });
+  ipcMain.handle(
+    IPC.exportAndMatch,
+    async (_e, config: AppConfig, resume: boolean): Promise<TrackMatch[]> => {
+      const cookie = loadCookie();
+      if (!cookie) throw new Error("还没登录网易云，请先扫码登录");
 
-    const tracks = await fetchSpotifyPlaylist(config);
-    log("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
+      log("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId, resume });
 
-    const results: TrackMatch[] = [];
+      const tracks = await fetchSpotifyPlaylist(config);
+      log("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
 
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
-      const candidates = await searchCandidates(cookie, track);
-      const best = candidates[0];
-
-      if (!best) {
-        log("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
+      // 断点续传：已经处理过的曲目直接复用结果，不用重新打接口
+      const previousResults = resume ? loadCheckpoint(config.spotifyPlaylistId) : null;
+      const doneMap = new Map<string, TrackMatch>();
+      if (previousResults) {
+        for (const r of previousResults) doneMap.set(r.spotifyTrack.spotifyId, r);
+        log("info", `从断点继续，已有 ${doneMap.size} 首处理过`);
+      } else if (!resume) {
+        clearCheckpoint(config.spotifyPlaylistId);
       }
 
-      results.push({
-        spotifyTrack: track,
-        candidates,
-        selectedNeteaseId: best && best.score >= MATCH_THRESHOLD ? best.id : null,
-        status: !best ? "notfound" : best.score >= MATCH_THRESHOLD ? "matched" : "uncertain",
+      const results: TrackMatch[] = [];
+      const RATE_LIMIT_ABORT_THRESHOLD = 6;
+      let consecutiveRateLimited = 0;
+
+      for (let i = 0; i < tracks.length; i++) {
+        const track = tracks[i];
+        const cached = doneMap.get(track.spotifyId);
+
+        if (cached) {
+          results.push(cached);
+          mainWindow?.webContents.send(IPC.matchProgress, {
+            done: i + 1,
+            total: tracks.length,
+            currentTrackName: track.name,
+          });
+          continue;
+        }
+
+        const { candidates, rateLimited } = await searchCandidates(cookie, track);
+        const best = candidates[0];
+
+        if (rateLimited) {
+          consecutiveRateLimited++;
+        } else {
+          consecutiveRateLimited = 0;
+        }
+
+        if (!best) {
+          log("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
+        }
+
+        results.push({
+          spotifyTrack: track,
+          candidates,
+          selectedNeteaseId: best && best.score >= MATCH_THRESHOLD ? best.id : null,
+          status: !best ? "notfound" : best.score >= MATCH_THRESHOLD ? "matched" : "uncertain",
+        });
+
+        // 每首都存一下断点，中途崩了/被限流中止了也不会丢进度
+        saveCheckpoint(config.spotifyPlaylistId, results);
+
+        mainWindow?.webContents.send(IPC.matchProgress, {
+          done: i + 1,
+          total: tracks.length,
+          currentTrackName: track.name,
+        });
+
+        if (consecutiveRateLimited >= RATE_LIMIT_ABORT_THRESHOLD) {
+          log(
+            "error",
+            `连续 ${consecutiveRateLimited} 首触发限流，判断为被网易云暂时封禁，提前中止`
+          );
+          throw new Error(
+            `已经连续 ${consecutiveRateLimited} 首歌搜索都被网易云限流拒绝，看起来是被暂时限制访问了，` +
+              `继续跑也没用。已经匹配到的 ${results.length} 首进度已经保存，建议先歇一会儿（几十分钟到几小时不等）` +
+              `再重新点"导出并匹配"，会自动从这里接着跑，不用重新开始`
+          );
+        }
+      }
+
+      // 顺利跑完，断点就没用了，清掉
+      clearCheckpoint(config.spotifyPlaylistId);
+
+      log("info", "匹配阶段完成", {
+        total: results.length,
+        matched: results.filter((r) => r.status === "matched").length,
+        uncertain: results.filter((r) => r.status === "uncertain").length,
+        notfound: results.filter((r) => r.status === "notfound").length,
       });
 
-      mainWindow?.webContents.send(IPC.matchProgress, {
-        done: i + 1,
-        total: tracks.length,
-        currentTrackName: track.name,
-      });
+      return results;
     }
-
-    log("info", "匹配阶段完成", {
-      total: results.length,
-      matched: results.filter((r) => r.status === "matched").length,
-      uncertain: results.filter((r) => r.status === "uncertain").length,
-      notfound: results.filter((r) => r.status === "notfound").length,
-    });
-
-    return results;
-  });
+  );
 
   ipcMain.handle(
     IPC.importToNetease,

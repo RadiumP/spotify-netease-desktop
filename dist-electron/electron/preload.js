@@ -10,7 +10,8 @@ const api = {
     isNeteaseLoggedIn: () => electron_1.ipcRenderer.invoke(types_1.IPC.neteaseIsLoggedIn),
     startNeteaseLogin: () => electron_1.ipcRenderer.invoke(types_1.IPC.neteaseLoginStart),
     pollNeteaseLogin: (unikey) => electron_1.ipcRenderer.invoke(types_1.IPC.neteaseLoginPoll, unikey),
-    exportAndMatch: (config) => electron_1.ipcRenderer.invoke(types_1.IPC.exportAndMatch, config),
+    exportAndMatch: (config, resume) => electron_1.ipcRenderer.invoke(types_1.IPC.exportAndMatch, config, resume),
+    checkpointStatus: (playlistId) => electron_1.ipcRenderer.invoke(types_1.IPC.checkpointStatus, playlistId),
     onMatchProgress: (cb) => {
         const listener = (_e, payload) => cb(payload);
         electron_1.ipcRenderer.on(types_1.IPC.matchProgress, listener);

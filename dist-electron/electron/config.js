@@ -31,6 +31,10 @@ exports.loadCookie = loadCookie;
 exports.saveCookie = saveCookie;
 exports.loadSpotifyToken = loadSpotifyToken;
 exports.saveSpotifyToken = saveSpotifyToken;
+exports.clearSpotifyToken = clearSpotifyToken;
+exports.loadCheckpoint = loadCheckpoint;
+exports.saveCheckpoint = saveCheckpoint;
+exports.clearCheckpoint = clearCheckpoint;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const electron_1 = require("electron");
@@ -88,4 +92,33 @@ function loadSpotifyToken() {
 }
 function saveSpotifyToken(token) {
     fs.writeFileSync(spotifyTokenPath(), JSON.stringify(token, null, 2), "utf-8");
+}
+function clearSpotifyToken() {
+    const p = spotifyTokenPath();
+    if (fs.existsSync(p))
+        fs.unlinkSync(p);
+}
+function checkpointPath(playlistId) {
+    // 文件名里可能有 / 之类的字符（虽然一般不会），保险起见处理一下
+    const safeId = playlistId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return path.join(dataDir(), `checkpoint-${safeId}.json`);
+}
+function loadCheckpoint(playlistId) {
+    const p = checkpointPath(playlistId);
+    if (!fs.existsSync(p))
+        return null;
+    try {
+        return JSON.parse(fs.readFileSync(p, "utf-8"));
+    }
+    catch {
+        return null;
+    }
+}
+function saveCheckpoint(playlistId, results) {
+    fs.writeFileSync(checkpointPath(playlistId), JSON.stringify(results), "utf-8");
+}
+function clearCheckpoint(playlistId) {
+    const p = checkpointPath(playlistId);
+    if (fs.existsSync(p))
+        fs.unlinkSync(p);
 }

@@ -14,21 +14,30 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
   const [importing, setImporting] = useState(false);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checkpointCount, setCheckpointCount] = useState<number | null>(null);
 
   useEffect(() => {
     return window.api.onMatchProgress(setProgress);
   }, []);
 
-  async function runExportAndMatch() {
+  useEffect(() => {
+    if (!config.spotifyPlaylistId) return;
+    window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
+  }, [config.spotifyPlaylistId]);
+
+  async function runExportAndMatch(resume: boolean) {
     setError(null);
     setSummary(null);
     setLoading(true);
     setProgress(null);
     try {
-      const result = await window.api.exportAndMatch(config);
+      const result = await window.api.exportAndMatch(config, resume);
       onMatchesChange(result);
+      setCheckpointCount(null);
     } catch (err: any) {
       setError(err?.message ?? String(err));
+      // 中止之后进度还在，刷新一下断点状态，方便展示"继续"按钮
+      window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
     } finally {
       setLoading(false);
     }
@@ -66,14 +75,28 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
     <div className="panel">
       <h2>匹配 & 导入</h2>
 
-      <div className="toolbar">
-        <button onClick={runExportAndMatch} disabled={loading}>
-          {loading ? "正在导出并匹配..." : "从 Spotify 导出并匹配"}
-        </button>
-        <button type="button" className="secondary" onClick={() => window.api.openLogFolder()}>
-          查看日志
-        </button>
-      </div>
+      {checkpointCount !== null && !loading && (
+        <div className="checkpoint-box">
+          <p>检测到上次没跑完的进度，已经处理过 {checkpointCount} 首。</p>
+          <div className="toolbar">
+            <button onClick={() => runExportAndMatch(true)}>从上次继续</button>
+            <button type="button" className="secondary" onClick={() => runExportAndMatch(false)}>
+              重新开始
+            </button>
+          </div>
+        </div>
+      )}
+
+      {checkpointCount === null && (
+        <div className="toolbar">
+          <button onClick={() => runExportAndMatch(false)} disabled={loading}>
+            {loading ? "正在导出并匹配..." : "从 Spotify 导出并匹配"}
+          </button>
+          <button type="button" className="secondary" onClick={() => window.api.openLogFolder()}>
+            查看日志
+          </button>
+        </div>
+      )}
 
       {progress && (
         <div className="progress">
@@ -84,7 +107,14 @@ export default function MatchReviewPage({ config, loggedIn, matches, onMatchesCh
         </div>
       )}
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <div className="error-box">
+          <p className="error">{error}</p>
+          <button type="button" className="secondary" onClick={() => window.api.openLogFolder()}>
+            查看日志
+          </button>
+        </div>
+      )}
 
       {matches.length > 0 && (
         <>

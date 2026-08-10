@@ -14,6 +14,7 @@ exports.IPC = {
     neteaseLoginStatusCheck: "netease:login-check",
     neteaseIsLoggedIn: "netease:is-logged-in",
     exportAndMatch: "flow:export-and-match",
+    checkpointStatus: "flow:checkpoint-status",
     matchProgress: "flow:match-progress", // main -> renderer 推送
     importToNetease: "flow:import",
     openLogFolder: "log:open-folder",

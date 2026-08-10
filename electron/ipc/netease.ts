@@ -51,14 +51,20 @@ function isRateLimited(err: any): boolean {
   );
 }
 
+export interface SearchResult {
+  candidates: NeteaseCandidate[];
+  rateLimited: boolean; // 彻底失败时，是不是因为限流失败的（用来判断要不要整体提前中止）
+}
+
 export async function searchCandidates(
   cookie: string,
   track: SpotifyTrack,
   limit = 5
-): Promise<NeteaseCandidate[]> {
+): Promise<SearchResult> {
   const keyword = `${track.name} ${track.artists[0] ?? ""}`;
 
   const maxAttempts = 4;
+  let lastWasRateLimited = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
@@ -93,9 +99,10 @@ export async function searchCandidates(
         };
       });
 
-      return candidates.sort((a, b) => b.score - a.score);
+      return { candidates: candidates.sort((a, b) => b.score - a.score), rateLimited: false };
     } catch (err: any) {
       const rateLimited = isRateLimited(err);
+      lastWasRateLimited = rateLimited;
 
       if (rateLimited) {
         currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
@@ -113,7 +120,8 @@ export async function searchCandidates(
   }
 
   log("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`, { currentDelayMs });
-  return []; // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理，不中断整批导出
+  // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；rateLimited 交给上层判断要不要整体中止
+  return { candidates: [], rateLimited: lastWasRateLimited };
 }
 
 export async function createPlaylist(cookie: string, name: string): Promise<number> {

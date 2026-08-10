@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { AppConfig, SPOTIFY_REDIRECT_URI } from "../../shared/types";
 
 interface Props {
@@ -12,10 +12,28 @@ export default function SettingsPage({ config, onSave }: Props) {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [autoSaved, setAutoSaved] = useState(false);
+  const isFirstRender = useRef(true);
 
   useEffect(() => {
     window.api.isSpotifyLoggedIn().then(setSpotifyLoggedIn);
   }, []);
+
+  // 表单任何字段变化后，停顿 800ms 没再输入就自动存盘，不用非得点"保存并下一步"，
+  // 免得中途跳去别的步骤把刚填的 Client ID 弄丢
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      window.api.saveConfig(form).then(() => {
+        setAutoSaved(true);
+        setTimeout(() => setAutoSaved(false), 1500);
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [form]);
 
   function update<K extends keyof AppConfig>(key: K, value: AppConfig[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -112,7 +130,10 @@ export default function SettingsPage({ config, onSave }: Props) {
         />
       </label>
 
-      <button type="submit">保存并下一步</button>
+      <div className="toolbar">
+        <button type="submit">保存并下一步</button>
+        {autoSaved && <span className="ok">已自动保存</span>}
+      </div>
     </form>
   );
 }

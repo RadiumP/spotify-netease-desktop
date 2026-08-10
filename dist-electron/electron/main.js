@@ -74,18 +74,51 @@ function registerIpcHandlers() {
         }
         return { code: status.code, message: status.message };
     });
-    electron_1.ipcMain.handle(types_1.IPC.exportAndMatch, async (_e, config) => {
+    electron_1.ipcMain.handle(types_1.IPC.checkpointStatus, (_e, playlistId) => {
+        const checkpoint = (0, config_1.loadCheckpoint)(playlistId);
+        return checkpoint ? { count: checkpoint.length } : null;
+    });
+    electron_1.ipcMain.handle(types_1.IPC.exportAndMatch, async (_e, config, resume) => {
         const cookie = (0, config_1.loadCookie)();
         if (!cookie)
             throw new Error("还没登录网易云，请先扫码登录");
-        (0, logger_1.log)("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId });
+        (0, logger_1.log)("info", "开始导出并匹配", { playlistId: config.spotifyPlaylistId, resume });
         const tracks = await (0, spotify_1.fetchSpotifyPlaylist)(config);
         (0, logger_1.log)("info", `Spotify 歌单导出完成，共 ${tracks.length} 首`);
+        // 断点续传：已经处理过的曲目直接复用结果，不用重新打接口
+        const previousResults = resume ? (0, config_1.loadCheckpoint)(config.spotifyPlaylistId) : null;
+        const doneMap = new Map();
+        if (previousResults) {
+            for (const r of previousResults)
+                doneMap.set(r.spotifyTrack.spotifyId, r);
+            (0, logger_1.log)("info", `从断点继续，已有 ${doneMap.size} 首处理过`);
+        }
+        else if (!resume) {
+            (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
+        }
         const results = [];
+        const RATE_LIMIT_ABORT_THRESHOLD = 6;
+        let consecutiveRateLimited = 0;
         for (let i = 0; i < tracks.length; i++) {
             const track = tracks[i];
-            const candidates = await (0, netease_1.searchCandidates)(cookie, track);
+            const cached = doneMap.get(track.spotifyId);
+            if (cached) {
+                results.push(cached);
+                mainWindow?.webContents.send(types_1.IPC.matchProgress, {
+                    done: i + 1,
+                    total: tracks.length,
+                    currentTrackName: track.name,
+                });
+                continue;
+            }
+            const { candidates, rateLimited } = await (0, netease_1.searchCandidates)(cookie, track);
             const best = candidates[0];
+            if (rateLimited) {
+                consecutiveRateLimited++;
+            }
+            else {
+                consecutiveRateLimited = 0;
+            }
             if (!best) {
                 (0, logger_1.log)("warn", `未匹配到任何候选: ${track.name} - ${track.artists.join("/")}`);
             }
@@ -95,12 +128,22 @@ function registerIpcHandlers() {
                 selectedNeteaseId: best && best.score >= match_1.MATCH_THRESHOLD ? best.id : null,
                 status: !best ? "notfound" : best.score >= match_1.MATCH_THRESHOLD ? "matched" : "uncertain",
             });
+            // 每首都存一下断点，中途崩了/被限流中止了也不会丢进度
+            (0, config_1.saveCheckpoint)(config.spotifyPlaylistId, results);
             mainWindow?.webContents.send(types_1.IPC.matchProgress, {
                 done: i + 1,
                 total: tracks.length,
                 currentTrackName: track.name,
             });
+            if (consecutiveRateLimited >= RATE_LIMIT_ABORT_THRESHOLD) {
+                (0, logger_1.log)("error", `连续 ${consecutiveRateLimited} 首触发限流，判断为被网易云暂时封禁，提前中止`);
+                throw new Error(`已经连续 ${consecutiveRateLimited} 首歌搜索都被网易云限流拒绝，看起来是被暂时限制访问了，` +
+                    `继续跑也没用。已经匹配到的 ${results.length} 首进度已经保存，建议先歇一会儿（几十分钟到几小时不等）` +
+                    `再重新点"导出并匹配"，会自动从这里接着跑，不用重新开始`);
+            }
         }
+        // 顺利跑完，断点就没用了，清掉
+        (0, config_1.clearCheckpoint)(config.spotifyPlaylistId);
         (0, logger_1.log)("info", "匹配阶段完成", {
             total: results.length,
             matched: results.filter((r) => r.status === "matched").length,

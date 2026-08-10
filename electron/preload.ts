@@ -12,8 +12,11 @@ const api = {
   startNeteaseLogin: () => ipcRenderer.invoke(IPC.neteaseLoginStart),
   pollNeteaseLogin: (unikey: string) => ipcRenderer.invoke(IPC.neteaseLoginPoll, unikey),
 
-  exportAndMatch: (config: AppConfig): Promise<TrackMatch[]> =>
-    ipcRenderer.invoke(IPC.exportAndMatch, config),
+  exportAndMatch: (config: AppConfig, resume: boolean): Promise<TrackMatch[]> =>
+    ipcRenderer.invoke(IPC.exportAndMatch, config, resume),
+
+  checkpointStatus: (playlistId: string): Promise<{ count: number } | null> =>
+    ipcRenderer.invoke(IPC.checkpointStatus, playlistId),
 
   onMatchProgress: (cb: (e: MatchProgressEvent) => void) => {
     const listener = (_e: unknown, payload: MatchProgressEvent) => cb(payload);

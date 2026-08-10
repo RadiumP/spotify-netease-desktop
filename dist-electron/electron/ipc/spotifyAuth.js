@@ -98,18 +98,24 @@ function waitForCallback(state) {
     });
 }
 async function exchangeCodeForToken(clientId, code, codeVerifier) {
-    const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: types_1.SPOTIFY_REDIRECT_URI,
-        client_id: clientId,
-        code_verifier: codeVerifier,
-    }).toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
-    return {
-        accessToken: resp.data.access_token,
-        refreshToken: resp.data.refresh_token,
-        expiresAt: Date.now() + resp.data.expires_in * 1000,
-    };
+    try {
+        const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: types_1.SPOTIFY_REDIRECT_URI,
+            client_id: clientId,
+            code_verifier: codeVerifier,
+        }).toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+        return {
+            accessToken: resp.data.access_token,
+            refreshToken: resp.data.refresh_token,
+            expiresAt: Date.now() + resp.data.expires_in * 1000,
+        };
+    }
+    catch (err) {
+        const detail = err.response?.data?.error_description ?? err.response?.data?.error ?? err.message;
+        throw new Error(`Spotify 换取 token 失败：${detail}`);
+    }
 }
 async function loginWithBrowser(clientId) {
     if (!clientId) {
@@ -123,14 +129,20 @@ async function loginWithBrowser(clientId) {
     return exchangeCodeForToken(clientId, code, codeVerifier);
 }
 async function refreshAccessToken(clientId, refreshToken) {
-    const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        client_id: clientId,
-    }).toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
-    return {
-        accessToken: resp.data.access_token,
-        refreshToken: resp.data.refresh_token ?? refreshToken,
-        expiresAt: Date.now() + resp.data.expires_in * 1000,
-    };
+    try {
+        const resp = await axios_1.default.post("https://accounts.spotify.com/api/token", new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: refreshToken,
+            client_id: clientId,
+        }).toString(), { headers: { "Content-Type": "application/x-www-form-urlencoded" } });
+        return {
+            accessToken: resp.data.access_token,
+            refreshToken: resp.data.refresh_token ?? refreshToken,
+            expiresAt: Date.now() + resp.data.expires_in * 1000,
+        };
+    }
+    catch (err) {
+        const detail = err.response?.data?.error_description ?? err.response?.data?.error ?? err.message;
+        throw new Error(`Spotify 刷新登录状态失败：${detail}`);
+    }
 }

@@ -206,3 +206,26 @@ button.secondary {
   background: #ddd;
   color: #333;
 }
+
+.checkpoint-box {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #fff8e1;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.checkpoint-box p {
+  margin: 0 0 8px;
+}
+
+.error-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.error-box .error {
+  margin: 0;
+}

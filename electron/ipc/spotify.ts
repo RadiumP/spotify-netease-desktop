@@ -1,6 +1,6 @@
 import axios from "axios";
 import { AppConfig, SpotifyTrack } from "../../shared/types";
-import { loadSpotifyToken, saveSpotifyToken } from "../config";
+import { loadSpotifyToken, saveSpotifyToken, clearSpotifyToken } from "../config";
 import { refreshAccessToken } from "./spotifyAuth";
 
 /**
@@ -26,7 +26,14 @@ async function getValidAccessToken(config: AppConfig): Promise<string> {
     return token.accessToken;
   }
 
-  const refreshed = await refreshAccessToken(config.spotifyClientId, token.refreshToken);
+  const refreshed = await refreshAccessToken(config.spotifyClientId, token.refreshToken).catch(
+    (err) => {
+      // 刷新失败（refresh token 失效了，比如之前用旧版授权方式存的token）就把本地token清掉，
+      // 不然会一直卡在"看起来已登录但实际用不了"的状态
+      clearSpotifyToken();
+      throw new Error(`${err.message}。本地登录状态已失效并清除，请回设置页重新点「登录 Spotify」`);
+    }
+  );
   saveSpotifyToken(refreshed);
   return refreshed.accessToken;
 }

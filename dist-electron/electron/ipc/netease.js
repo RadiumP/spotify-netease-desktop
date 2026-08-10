@@ -46,6 +46,7 @@ function isRateLimited(err) {
 async function searchCandidates(cookie, track, limit = 5) {
     const keyword = `${track.name} ${track.artists[0] ?? ""}`;
     const maxAttempts = 4;
+    let lastWasRateLimited = false;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
         try {
@@ -74,10 +75,11 @@ async function searchCandidates(cookie, track, limit = 5) {
                     score: (0, match_1.scoreCandidate)(track, s.name, artistNames),
                 };
             });
-            return candidates.sort((a, b) => b.score - a.score);
+            return { candidates: candidates.sort((a, b) => b.score - a.score), rateLimited: false };
         }
         catch (err) {
             const rateLimited = isRateLimited(err);
+            lastWasRateLimited = rateLimited;
             if (rateLimited) {
                 currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
                 (0, logger_1.log)("warn", `触发网易云限流，节流间隔拉长到 ${currentDelayMs}ms: ${keyword}`);
@@ -92,7 +94,8 @@ async function searchCandidates(cookie, track, limit = 5) {
         }
     }
     (0, logger_1.log)("error", `网易云搜索彻底失败，已重试 ${maxAttempts} 次: ${keyword}`, { currentDelayMs });
-    return []; // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理，不中断整批导出
+    // 搜索彻底失败就当没搜到，交给后面的"未匹配清单"处理；rateLimited 交给上层判断要不要整体中止
+    return { candidates: [], rateLimited: lastWasRateLimited };
 }
 async function createPlaylist(cookie, name) {
     const resp = await axios_1.default.get(`${neteaseServer_1.NETEASE_API_BASE}/playlist/create`, {
