@@ -32,14 +32,12 @@ const spotify_1 = require("./ipc/spotify");
 const spotifyAuth_1 = require("./ipc/spotifyAuth");
 const netease_1 = require("./ipc/netease");
 const match_1 = require("./ipc/match");
+const pauseState_1 = require("./pauseState");
 const logger_1 = require("./logger");
 let mainWindow = null;
 // 防止意外并发跑两个导出/匹配任务（比如前端 bug 导致重复触发）——两边同时搜索同一个歌单，
 // 会导致结果重复出现、限流更容易触发。前端已经会在跑的时候禁用按钮，这里是兜底的第二道保险。
 let matchInProgress = false;
-// 用户点了"暂停"按钮之后置 true，主循环每处理完一首歌会检查一次，检查到就停下来
-// （当前正在搜的这首不会被打断，等它返回了才会真正停）
-let pauseRequested = false;
 function createWindow() {
     mainWindow = new electron_1.BrowserWindow({
         width: 1000,
@@ -86,7 +84,7 @@ function registerIpcHandlers() {
     });
     electron_1.ipcMain.handle(types_1.IPC.pauseMatch, () => {
         if (matchInProgress) {
-            pauseRequested = true;
+            (0, pauseState_1.requestPause)();
             (0, logger_1.log)("info", "用户点击了暂停按钮");
         }
     });
@@ -98,7 +96,7 @@ function registerIpcHandlers() {
             throw new Error("已经有一个导出/匹配任务在跑了，等它结束或者自动暂停之后再试");
         }
         matchInProgress = true;
-        pauseRequested = false; // 保险起见，开始新任务前把上一轮可能残留的暂停标记清掉
+        (0, pauseState_1.clearPause)(); // 保险起见，开始新任务前把上一轮可能残留的暂停标记清掉
         // 跑起来可能要好几分钟到几十分钟，别让系统中途待机把网络连接搞断。
         // 只挡"系统休眠"，屏幕该黑还是会黑，不影响省电，也不会一直常亮费电
         const blockerId = electron_1.powerSaveBlocker.start("prevent-app-suspension");
@@ -135,17 +133,24 @@ function registerIpcHandlers() {
                         total: tracks.length,
                         currentTrackName: track.name,
                     });
-                    if (pauseRequested) {
+                    if ((0, pauseState_1.isPauseRequested)()) {
                         aborted = true;
                         abortReason = `手动暂停，已经匹配到的 ${results.length} 首已经保存，随时可以点"从上次继续"接着跑`;
                         (0, logger_1.log)("info", "用户手动暂停（回放断点阶段），停止匹配循环");
-                        pauseRequested = false;
+                        (0, pauseState_1.clearPause)();
                         (0, config_1.saveCheckpoint)(config.spotifyPlaylistId, results);
                         break;
                     }
                     continue;
                 }
-                const { candidates, failureKind } = await (0, netease_1.searchCandidates)(cookie, track);
+                const { candidates, failureKind, paused } = await (0, netease_1.searchCandidates)(cookie, track);
+                if (paused) {
+                    aborted = true;
+                    abortReason = `手动暂停，已经匹配到的 ${results.length} 首已经保存，随时可以点"从上次继续"接着跑`;
+                    (0, logger_1.log)("info", "用户手动暂停，停止匹配循环（当前这首没搜完，下次会重新搜）");
+                    (0, pauseState_1.clearPause)();
+                    break;
+                }
                 const best = candidates[0];
                 consecutiveRateLimited = failureKind === "rateLimited" ? consecutiveRateLimited + 1 : 0;
                 consecutiveNetworkErrors = failureKind === "network" ? consecutiveNetworkErrors + 1 : 0;
@@ -168,13 +173,6 @@ function registerIpcHandlers() {
                     total: tracks.length,
                     currentTrackName: track.name,
                 });
-                if (pauseRequested) {
-                    aborted = true;
-                    abortReason = `手动暂停，已经匹配到的 ${results.length} 首已经保存，随时可以点"从上次继续"接着跑`;
-                    (0, logger_1.log)("info", "用户手动暂停，停止匹配循环");
-                    pauseRequested = false;
-                    break;
-                }
                 if (consecutiveNetworkErrors >= NETWORK_ERROR_ABORT_THRESHOLD) {
                     aborted = true;
                     abortReason =
@@ -210,6 +208,7 @@ function registerIpcHandlers() {
         finally {
             electron_1.powerSaveBlocker.stop(blockerId);
             matchInProgress = false;
+            (0, pauseState_1.clearPause)();
             (0, logger_1.log)("info", "已解除系统休眠阻止");
         }
     });

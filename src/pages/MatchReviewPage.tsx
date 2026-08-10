@@ -178,7 +178,11 @@ export default function MatchReviewPage({
               </tr>
             </thead>
             <tbody>
-              {matches.map((m, i) => {
+              {matches
+                .map((m, i) => ({ m, i })) // 先把原始下标记下来，后面换候选/导入都得用这个原始下标
+                .slice()
+                .reverse() // 最新处理完的排最上面，不用一直往下滚才能看到最新进度
+                .map(({ m, i }) => {
                 const selected = m.candidates.find((c) => c.id === m.selectedNeteaseId);
                 return (
                   <tr key={m.spotifyTrack.spotifyId} className={`row-${m.status}`}>
