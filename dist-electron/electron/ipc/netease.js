@@ -35,6 +35,12 @@ function sleep(ms) {
 const BASE_DELAY_MS = 600;
 const MAX_DELAY_MS = 20000;
 let currentDelayMs = BASE_DELAY_MS;
+// 每次实际等待的时间不用固定值，在当前节流间隔基础上加随机抖动（1.0x ~ 1.8x），
+// 别让请求节奏太规律——规律的间隔本身也是容易被识别成机器人请求的特征之一
+function randomizedDelay(baseMs) {
+    const jitterFactor = 1 + Math.random() * 0.8; // 1.0 ~ 1.8
+    return Math.round(baseMs * jitterFactor);
+}
 function isRateLimited(err) {
     const data = err.response?.data;
     return (err.response?.status === 405 ||
@@ -52,7 +58,7 @@ async function searchCandidates(cookie, track, limit = 5) {
     const maxAttempts = 4;
     let lastFailureKind = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        await sleep(currentDelayMs); // 每次真正发请求前都按当前节流间隔等一下，不只是失败后才等
+        await sleep(randomizedDelay(currentDelayMs)); // 每次真正发请求前都按当前节流间隔（带随机抖动）等一下
         try {
             const resp = await httpClient_1.http.get(`${neteaseServer_1.NETEASE_API_BASE}/search`, {
                 params: { keywords: keyword, limit, cookie, timestamp: Date.now() },
