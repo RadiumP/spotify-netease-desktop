@@ -1,0 +1,40 @@
+# 推一个形如 v0.1.0 的 tag 就会自动触发：
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# 三台机器（Windows/Mac/Linux）分别跑 electron-builder 打包，
+# 打包完自动传到 GitHub 仓库的 Releases 页面，跟 tag 名对应的那个 release 下面，
+# 用户去 Releases 页面就能看到三个平台的安装包分别下载。
+#
+# Electron 应用没法跨平台编译（尤其涉及原生依赖的时候），所以必须真的在三个系统上各跑一次，
+# 这也是为什么用 matrix 而不是单台机器打包三份。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # electron-builder 要用这个权限去创建/更新 Release 并上传安装包
+
+jobs:
+  release:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Build and publish
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # electron-builder 认的是这个变量名，不是 GITHUB_TOKEN

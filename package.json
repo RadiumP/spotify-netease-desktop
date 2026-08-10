@@ -2,6 +2,10 @@
   "name": "spotify-netease-desktop",
   "version": "0.1.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/spotify-netease-desktop.git"
+  },
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n VITE,ELECTRON \"vite\" \"npm:dev:electron\"",
@@ -10,7 +14,8 @@
     "build:electron": "tsc -p electron/tsconfig.json",
     "build": "npm run build:renderer && npm run build:electron",
     "start": "electron .",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "release": "npm run build && electron-builder --publish always"
   },
   "dependencies": {
     "NeteaseCloudMusicApi": "^4.24.1",
@@ -35,7 +40,22 @@
   },
   "build": {
     "appId": "com.young.spotify-netease-desktop",
+    "productName": "Spotify2Netease",
     "files": ["dist/**", "dist-electron/**"],
-    "directories": { "output": "release" }
+    "directories": { "output": "release" },
+    "publish": {
+      "provider": "github"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Audio"
+    }
   }
 }

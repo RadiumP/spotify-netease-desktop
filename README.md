@@ -75,6 +75,24 @@ npm run dev        # 起 Vite 开发服务器 + 编译 electron + 拉起窗口�
 npm run package   # electron-builder，产物在 release/ 目录，双击就能装
 ```
 
+### 4. 发布到 GitHub Releases（多平台下载页面）
+
+仓库里配了 `.github/workflows/release.yml`：推一个 `v` 开头的 tag，GitHub Actions 会自动在
+Windows / Mac / Linux 三台机器上分别打包，打包完自动传到对应 tag 的 Release 页面，用户去
+Releases 页面就能看到三个平台的安装包分别下载。
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+用之前记得把 `package.json` 里 `repository.url` 换成你自己的 GitHub 仓库地址（现在是占位符
+`YOUR_GITHUB_USERNAME`）。不需要额外配置 token，GitHub Actions 自带的 `GITHUB_TOKEN` 权限够用。
+
+打包出来的安装包默认没有代码签名，Windows 上装的时候会跳 SmartScreen"未知发布者"警告，Mac 上会被
+Gatekeeper 拦一下，点"仍要运行/仍要打开"就行——个人项目分享给认识的人用可以不用管，真要去掉这些
+警告需要买代码签名证书（Mac 还需要 Apple Developer 账号）。
+
 ## 使用说明
 
 **前提：Spotify 2026 年 2 月做了一次 API 收紧**，开发模式应用不能再免登录读任意公开歌单了，新的
