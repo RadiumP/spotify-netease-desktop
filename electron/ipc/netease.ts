@@ -158,7 +158,10 @@ export async function searchCandidates(
 
       if (rateLimited) {
         currentDelayMs = Math.min(MAX_DELAY_MS, currentDelayMs * 2);
-        log("warn", `触发网易云限流，节流间隔拉长到 ${currentDelayMs}ms: ${keyword}`);
+        log("warn", `触发网易云限流（消息明确要求稍后重试），不再重试，直接返回: ${keyword}`, {
+          currentDelayMs,
+        });
+        return { candidates: [], failureKind: "rateLimited" };
       }
 
       log("error", `网易云搜索失败（第${attempt}次尝试）: ${keyword}`, {

@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { AppConfig, ImportSummary, MatchProgressEvent, TrackMatch } from "../../shared/types";
+import {
+  AppConfig,
+  ExportMatchOutcome,
+  ImportSummary,
+  MatchProgressEvent,
+  TrackMatch,
+} from "../../shared/types";
 
 interface Props {
   config: AppConfig;
@@ -7,6 +13,19 @@ interface Props {
   matches: TrackMatch[];
   onMatchesChange: (matches: TrackMatch[]) => void;
   onRunningChange: (running: boolean) => void;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function formatCountdown(msRemaining: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(msRemaining / 1000));
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m} 分 ${s.toString().padStart(2, "0")} 秒`;
 }
 
 export default function MatchReviewPage({
@@ -24,12 +43,50 @@ export default function MatchReviewPage({
   const [pausedReason, setPausedReason] = useState<string | null>(null);
   const [pausing, setPausing] = useState(false);
   const [checkpointCount, setCheckpointCount] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [autoRestartAt, setAutoRestartAt] = useState<number | null>(null);
+  const [autoRestartCountdown, setAutoRestartCountdown] = useState<string | null>(null);
 
   // 实时结果用 ref 存一份，避免闭包里拿到过期的 matches；界面显示还是走 onMatchesChange 触发的 state
   const liveMatchesRef = useRef<TrackMatch[]>([]);
 
+  // 传输计时：跑起来就开始计时，停了就停，每次开始新一轮（不管手动还是自动重试触发）都从 0 重新计
   useEffect(() => {
-    return window.api.onMatchProgress(setProgress);
+    if (!loading) return;
+    const startedAt = Date.now();
+    setElapsedSeconds(0);
+    const timer = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [loading]);
+
+  // 自动重试倒计时显示
+  useEffect(() => {
+    if (autoRestartAt === null) {
+      setAutoRestartCountdown(null);
+      return;
+    }
+    const tick = () => setAutoRestartCountdown(formatCountdown(autoRestartAt - Date.now()));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [autoRestartAt]);
+
+  useEffect(() => {
+    // 每次进度事件到达，如果之前不是"跑起来"的状态，说明是后台自动重试自己触发的一轮，
+    // 界面这边也得跟着切到"进行中"，不用等用户点按钮
+    return window.api.onMatchProgress((p) => {
+      setProgress(p);
+      setLoading((prev) => {
+        if (!prev) {
+          onRunningChange(true);
+          setAutoRestartAt(null);
+        }
+        return true;
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -42,6 +99,40 @@ export default function MatchReviewPage({
   }, []);
 
   useEffect(() => {
+    // 一轮跑完/暂停就会收到一次，不管这一轮是手动点按钮触发的还是后台自动重试触发的，
+    // 都在这里统一处理，不用在按钮点击那边单独再处理一遍
+    return window.api.onMatchOutcome((outcome: ExportMatchOutcome) => {
+      onMatchesChange(outcome.results);
+      setLoading(false);
+      onRunningChange(false);
+      setPausing(false);
+      if (outcome.aborted) {
+        setPausedReason(outcome.abortReason ?? "已暂停");
+        setCheckpointCount(outcome.results.length);
+      } else {
+        setPausedReason(null);
+        setCheckpointCount(null);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return window.api.onAutoRestartScheduled(({ resumeAt }) => {
+      setAutoRestartAt(resumeAt);
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.api.onAutoRestartFailed(({ message }) => {
+      setAutoRestartAt(null);
+      setError(`自动重试失败：${message}`);
+      window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.spotifyPlaylistId]);
+
+  useEffect(() => {
     if (!config.spotifyPlaylistId) return;
     window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
   }, [config.spotifyPlaylistId]);
@@ -50,6 +141,7 @@ export default function MatchReviewPage({
     setError(null);
     setPausedReason(null);
     setSummary(null);
+    setAutoRestartAt(null);
     setLoading(true);
     onRunningChange(true);
     setPausing(false);
@@ -57,19 +149,13 @@ export default function MatchReviewPage({
     liveMatchesRef.current = []; // 不管是不是断点续传，流式事件会把该有的（含之前处理过的）都重新推一遍
     onMatchesChange([]);
     try {
-      const outcome = await window.api.exportAndMatch(config, resume);
-      onMatchesChange(outcome.results); // 用最终结果对齐一次，防止个别流式事件丢失导致的不一致
-      if (outcome.aborted) {
-        setPausedReason(outcome.abortReason ?? "已自动暂停");
-      }
-      setCheckpointCount(outcome.aborted ? outcome.results.length : null);
+      await window.api.exportAndMatch(config, resume);
+      // 结果通过 onMatchOutcome 广播处理，这里不用管返回值
     } catch (err: any) {
       setError(err?.message ?? String(err));
-      window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
-    } finally {
       setLoading(false);
-      setPausing(false);
       onRunningChange(false);
+      window.api.checkpointStatus(config.spotifyPlaylistId).then((c) => setCheckpointCount(c?.count ?? null));
     }
   }
 
@@ -108,6 +194,9 @@ export default function MatchReviewPage({
       {checkpointCount !== null && !loading && (
         <div className="checkpoint-box">
           <p>检测到上次没跑完的进度，已经处理过 {checkpointCount} 首。</p>
+          {autoRestartCountdown && (
+            <p>已安排自动重试，预计还有 {autoRestartCountdown} 后自动继续，也可以现在就手动继续：</p>
+          )}
           <div className="toolbar">
             <button onClick={() => runExportAndMatch(true)}>从上次继续</button>
             <button type="button" className="secondary" onClick={() => runExportAndMatch(false)}>
@@ -134,6 +223,7 @@ export default function MatchReviewPage({
           <span>
             {progress.done}/{progress.total} — {progress.currentTrackName}
           </span>
+          {loading && <span className="elapsed">已用时 {formatDuration(elapsedSeconds)}</span>}
           {loading && (
             <button
               type="button"
@@ -152,7 +242,7 @@ export default function MatchReviewPage({
 
       {pausedReason && (
         <div className="checkpoint-box">
-          <p>⏸ 已自动暂停：{pausedReason}</p>
+          <p>⏸ 已暂停：{pausedReason}</p>
           <p>下面表格里已经是目前搜到的部分，可以先导入这些，剩下的等会儿再接着跑。</p>
         </div>
       )}

@@ -37,6 +37,33 @@ const api = {
     };
   },
 
+  // 一轮跑完/暂停就会推一次，不管是手动点按钮触发的还是自动重试触发的，都走这一个事件
+  onMatchOutcome: (cb: (o: ExportMatchOutcome) => void) => {
+    const listener = (_e: unknown, payload: ExportMatchOutcome) => cb(payload);
+    ipcRenderer.on(IPC.matchOutcome, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.matchOutcome, listener);
+    };
+  },
+
+  // 限流/网络问题触发自动暂停之后，安排了自动重试的时间点（毫秒时间戳）
+  onAutoRestartScheduled: (cb: (payload: { resumeAt: number }) => void) => {
+    const listener = (_e: unknown, payload: { resumeAt: number }) => cb(payload);
+    ipcRenderer.on(IPC.autoRestartScheduled, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.autoRestartScheduled, listener);
+    };
+  },
+
+  // 自动重试本身失败了（比如这段时间里登录过期了），不会清空当前结果，只是提示一下
+  onAutoRestartFailed: (cb: (payload: { message: string }) => void) => {
+    const listener = (_e: unknown, payload: { message: string }) => cb(payload);
+    ipcRenderer.on(IPC.autoRestartFailed, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.autoRestartFailed, listener);
+    };
+  },
+
   importToNetease: (matches: TrackMatch[], playlistName: string) =>
     ipcRenderer.invoke(IPC.importToNetease, matches, playlistName),
 
