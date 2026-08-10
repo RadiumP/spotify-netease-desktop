@@ -2,6 +2,8 @@
 
 Spotify → 网易云音乐 歌单搬家工具。Electron + React + TypeScript 桌面应用，双击运行，不用装 Node / npm。
 
+**[⬇ 下载最新版（Windows / Mac）](https://github.com/RadiumP/spotify-netease-desktop/releases/latest)**
+
 三步流程：**设置** → **网易云扫码登录** → **导出 / 匹配 / 审核 / 导入**。
 
 跟直接调接口的脚本比，这个 UI 版核心价值在于：每首歌匹配到哪个网易云曲目会实时列成表格给你看置信度，

@@ -1,13 +1,11 @@
-# 推一个形如 v0.1.0 的 tag 就会自动触发：
-#   git tag v0.1.0
-#   git push origin v0.1.0
+# 推一个形如 v0.1.1 的 tag 就会自动触发：
+#   git tag v0.1.1
+#   git push origin v0.1.1
 #
-# 三台机器（Windows/Mac/Linux）分别跑 electron-builder 打包，
-# 打包完自动传到 GitHub 仓库的 Releases 页面，跟 tag 名对应的那个 release 下面，
-# 用户去 Releases 页面就能看到三个平台的安装包分别下载。
-#
-# Electron 应用没法跨平台编译（尤其涉及原生依赖的时候），所以必须真的在三个系统上各跑一次，
-# 这也是为什么用 matrix 而不是单台机器打包三份。
+# 分两段跑，避免 Windows/Mac 两边并行任务抢着"创建 Release"导致出现两个重复 draft：
+#   1. create-release：先单独跑一次，把这个 tag 对应的 Release 建好（如果还没有的话）
+#   2. release（matrix）：等第 1 步跑完了，Windows/Mac 才开始并行打包，
+#      这时候 Release 已经存在了，两边只是各自把安装包传上去，不会再抢着建。
 
 name: Release
 
@@ -17,10 +15,26 @@ on:
       - "v*"
 
 permissions:
-  contents: write # electron-builder 要用这个权限去创建/更新 Release 并上传安装包
+  contents: write # 创建/更新 Release、上传安装包都要用到这个权限
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub Release if it doesn't exist yet
+        run: |
+          if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            echo "Release 已经存在，跳过创建"
+          else
+            gh release create "${{ github.ref_name }}" --draft --title "${{ github.ref_name }}" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   release:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
