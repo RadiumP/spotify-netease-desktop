@@ -1,91 +1,117 @@
 # spotify-netease-desktop
 
-Spotify → 网易云音乐 歌单搬家工具，Electron + React + TypeScript 桌面应用。
+Spotify → 网易云音乐 歌单搬家工具。Electron + React + TypeScript 桌面应用，双击运行，不用装 Node / npm。
 
-三步流程：**设置** → **网易云扫码登录** → **导出/匹配/审核/导入**。
+三步流程：**设置** → **网易云扫码登录** → **导出 / 匹配 / 审核 / 导入**。
 
-跟纯脚本版比，这个 UI 版最大的区别是：每首歌匹配到哪个网易云曲目，会先列成表格给你看置信度，
-你可以在下拉框里换成候选列表里的其他结果，或者直接跳过，而不是等导入完了再看 `unmatched.txt` 补救。
+跟直接调接口的脚本比，这个 UI 版核心价值在于：每首歌匹配到哪个网易云曲目会实时列成表格给你看置信度，
+可以在下拉框里换成候选列表里的其他结果，或者直接跳过；遇到网易云限流/断网这类问题会自动暂停并保留进度，
+不用整批重来。
+
+## 功能
+
+- **Spotify 登录**：PKCE 授权码流程，只需要 Client ID，不需要 Client Secret，安全一些，也方便多人各自用自己的 Spotify App
+- **网易云扫码登录**：二维码直接渲染在界面里，自动轮询登录状态
+- **实时匹配**：每首歌搜索完立刻显示在表格里，不用等整个歌单跑完
+- **匹配审核**：每首歌显示匹配置信度，可以手动换成其他候选或跳过，不满意的不会被强制导入
+- **自适应限流应对**：请求间隔带随机抖动，遇到限流自动拉长间隔，顺利之后再慢慢降回来
+- **自动暂停 + 断点续传**：连续遇到限流或网络错误（超时/断网/待机唤醒后连接失效）会自动停止并保存进度，
+  已经匹配到的部分可以直接导入；重新点"导出并匹配"会检测到上次的进度，可以选择继续或重新开始
+- **导入去重**：导入时如果网易云已经有同名歌单会直接复用（不会重复建歌单），并自动跳过已经在里面的曲目
+- **防止系统休眠**：跑导出/导入期间会阻止系统自动待机，跑完自动解除，不影响正常省电
+- **本地日志**：关键事件（导出、匹配失败详情、限流触发等）按天写到本地文件，界面上有按钮直接打开日志文件夹
 
 ## 目录结构
 
 ```
-electron/          # 主进程（Node 环境）
-  main.ts           # 建窗口、注册所有 IPC handler
-  preload.ts         # 用 contextBridge 暴露安全的 API 给页面
-  config.ts           # 配置和 cookie 的本地持久化
-  neteaseServer.ts     # 内嵌启动 NeteaseCloudMusicApi 本地服务
+electron/               # 主进程（Node 环境）
+  main.ts                 # 建窗口、注册所有 IPC handler
+  preload.ts               # 用 contextBridge 暴露安全的 API 给页面
+  config.ts                 # 配置 / cookie / token / 断点续传 的本地持久化
+  logger.ts                  # 按天写本地日志
+  httpClient.ts                # 统一的 axios 实例（带超时，防止待机唤醒后请求卡死）
+  neteaseServer.ts               # 内嵌启动 NeteaseCloudMusicApi 本地服务
   ipc/
-    spotify.ts          # 拉取 Spotify 歌单
-    netease.ts           # 网易云登录/搜索/建歌单/加歌
-    match.ts               # 字符串相似度打分
+    spotify.ts                     # 拉取 Spotify 歌单（新版 /playlists/{id}/items 端点）
+    spotifyAuth.ts                   # Spotify PKCE 授权码登录 / 刷新 token
+    netease.ts                        # 网易云登录 / 搜索 / 建歌单或复用同名歌单 / 加歌
+    match.ts                           # 字符串相似度打分
 
-src/                # 渲染进程（React，跑在 Chromium 里）
-  App.tsx            # 三步流程的状态和路由
+src/                     # 渲染进程（React，跑在 Chromium 里）
+  App.tsx                  # 三步流程的状态和路由
   pages/
-    SettingsPage.tsx   # Spotify 凭证 + 歌单信息
-    NeteaseLoginPage.tsx # 扫码登录，二维码直接渲染在页面上
-    MatchReviewPage.tsx  # 导出+匹配、审核表格、一键导入
+    SettingsPage.tsx          # Spotify App 创建引导 + 登录 + 歌单信息
+    NeteaseLoginPage.tsx        # 扫码登录
+    MatchReviewPage.tsx          # 导出+实时匹配、审核表格、断点续传、导入
 
-shared/types.ts     # 两边都用到的类型定义，包括 IPC 频道名
+shared/types.ts          # 两边都用到的类型定义，包括 IPC 频道名
 ```
 
-## 跑起来
+## 快速开始
+
+### 1. 装依赖
 
 ```bash
-npm install       # 会下载 Electron 本体，第一次会比较大/慢
-npm run dev        # 起 vite 开发服务器 + 编译 electron + 拉起窗口
+npm install       # 会下载 Electron 本体，第一次比较大/慢；国内网络建议参考下面的镜像配置
 ```
 
-`npm run dev` 做了三件事（用 concurrently 并行跑）：起 Vite 开发服务器、把 `electron/` 编译成 JS、
-等两边都好了之后拉起 Electron 窗口指向 Vite 的 dev server（改代码热更新）。
+如果装 `electron` 卡住报 `ECONNRESET`，在项目根目录建一个 `.npmrc`：
 
-## 使用
+```
+registry=https://registry.npmmirror.com
+electron_mirror=https://npmmirror.com/mirrors/electron/
+electron_builder_binaries_mirror=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
 
-**重要：Spotify 在 2026 年 2 月做了一次 API 收紧**，开发模式应用不能再免登录读任意公开歌单了，
-新的 `/playlists/{id}/items` 端点只对**你自己拥有或协作的歌单**开放。所以现在必须先用你自己的
-Spotify 账号登录授权，而且只能搬自己名下（或被拉进协作的）歌单，公开但不是你自己的歌单搬不了。
+### 2. 起开发模式
 
-0. **注册 App**：设置页里第一步就是引导——打开 Spotify 开发者后台创建 App，Redirect URI 填
-   `http://127.0.0.1:8888/callback`（页面上有复制按钮），保存后把 Client ID 粘回设置页。用的是
-   PKCE 授权流程，**不需要 Client Secret**，Client ID 本身不是敏感信息，可以放心让朋友各自建自己的
-   App，不用共享任何密钥。
+```bash
+npm run dev        # 起 Vite 开发服务器 + 编译 electron + 拉起窗口，改代码热更新
+```
 
-1. **设置页**：按引导建好 App、填好 Client ID 之后，点"登录 Spotify"会弹系统默认浏览器走 Spotify
-   授权页，登录同意后浏览器跳回一个本地页面提示成功，回到应用就自动记录登录状态了。再填要搬的歌单 ID
-   （必须是自己账号下的歌单）和网易云新建歌单的名字。
+### 3. 打包成安装包
+
+```bash
+npm run package   # electron-builder，产物在 release/ 目录，双击就能装
+```
+
+## 使用说明
+
+**前提：Spotify 2026 年 2 月做了一次 API 收紧**，开发模式应用不能再免登录读任意公开歌单了，新的
+`/playlists/{id}/items` 端点只对**你自己拥有或协作的歌单**开放。所以必须先用自己的 Spotify 账号登录
+授权，而且只能搬自己名下（或被拉进协作的）歌单，别人分享的公开歌单搬不了（除非先加进自己的资料库）。
+
+1. **设置页**：跟着页面上的引导打开 Spotify 开发者后台创建一个 App（几分钟能搞定，只有自己用），
+   Redirect URI 填 `http://127.0.0.1:8888/callback`（页面上有复制按钮），把 Client ID 粘回来，点
+   "登录 Spotify" 走浏览器授权。再填要搬的歌单 ID 和网易云新建歌单的名字，所有字段会自动存本地。
 2. **网易云登录页**：点"生成二维码"，用网易云音乐 App 扫，自动轮询登录状态，成功后自动跳下一步。
-3. **匹配 & 导入页**：点"从 Spotify 导出并匹配"，逐首搜索打分（有进度条）。表格里每行可以在下拉框
-   换成其他候选或者选"跳过这首"，确认后点"导入到网易云"。
+3. **匹配 & 导入页**：点"从 Spotify 导出并匹配"，逐首搜索打分，实时显示在表格里。每行可以在下拉框
+   换成其他候选或选"跳过这首"，确认后点"导入到网易云"。如果中途被自动暂停了，已经匹配的部分照样能导入，
+   剩下的等条件恢复了重新点一次会自动接着跑。
 
-## 打包成安装包
+## 已知限制
 
-```bash
-npm run package   # electron-builder，产物在 release/ 目录
-```
+- **只能搬自己的歌单**：Spotify 政策限制，没法绕过。想搬别人分享的公开歌单，得先在 Spotify 里把它
+  "添加到你的资料库"。
+- **Spotify 开发模式最多 5 个授权用户**：想给超过 5 个朋友用，要么在 Spotify 后台加白名单邮箱（上限 5），
+  要么每个人自己照着设置页引导建一个自己的 App（不需要共享任何密钥，因为用的是 PKCE）。申请 Extended
+  Quota Mode 门槛是"注册公司 + 月活 25 万"，个人小工具不用考虑。
+- **网易云接口是非官方逆向的**（[NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)），
+  本身没有官方限流文档，触发限流的具体阈值是猜出来的，遇到持续限流只能等（几十分钟到几小时不等），
+  没有稳定的解决办法。大歌单（几百首以上）建议分批跑，别一次冲完。
+- **按歌单名字匹配复用**：导入时如果检测到同名歌单会直接复用，如果你账号下恰好有同名但无关的歌单，
+  会被误认成"已有歌单"往里面加歌。建议把"网易云新建歌单名字"改成不容易撞名的名字。
+- 没有自动化测试，靠 `tsc --noEmit` 和 `vite build` 做基本检查。
 
-## 已知没做的地方 / 可以自己接着改的
+## Changelog
 
-- **网易云内嵌服务**：`neteaseServer.ts` 用的是 `NeteaseCloudMusicApi` 包导出的 `serveNcmApi()` 编程接口
-  （对应它 README "作为 Node.js 模块使用"那部分）。如果你装的版本没有导出这个函数，会自动退回到
-  `spawn` 子进程的 fallback，但 fallback 假设了 `node_modules/.bin` 里有可执行文件，路径可能要按实际
-  打包结构调一下。
-- **搜索限流**：现在每首歌之间硬编码 sleep 300ms，歌单很大的话总时间会比较长，可以考虑改成并发+限速
-  （比如一次 3-5 个并行）。
-- **想分享给朋友用**：Spotify 开发模式的 App 最多只能有 5 个授权用户（在 developer.spotify.com 后台
-  加白名单邮箱），超过这个数就得申请 Extended Quota Mode——但那个门槛是"注册公司 + 月活25万"，个人
-  小工具基本不用考虑。现实的做法是最多 5 个人共用你建的 App（把他们邮箱加进白名单），或者每人自己
-  照着设置页的引导建一个自己的 App（几分钟的事，且不需要共享任何密钥，因为用的是 PKCE）。
-- **Spotify 只能搬自己的歌单**：这是 Spotify 2026年2月政策变更带来的硬限制，不是这个工具的设计选择，
-  没法绕过。如果想搬别人分享的公开歌单，得先在 Spotify 里把那个歌单"添加到你的资料库"，这样它会出现在
-  你自己的 `我的歌单` 里，理论上就能读了（没实测过，Spotify 文档没写清楚"添加到资料库"算不算协作）。
-- **持续限流的应对**：如果连续 6 首歌搜索都被判定为限流，会直接中止整批导出（而不是硬跑到底把剩下几百首
-  全标成"没搜到"），并且已经处理过的部分会存成断点。中止之后再点"导出并匹配"，页面上会先检测到断点，
-  提示"从上次继续"还是"重新开始"，继续的话已经处理过的曲目不会重新搜索。持续限流通常意味着账号/IP
-  被网易云暂时标记了，重试和调节流没用，得先歇一阵子（几十分钟到几小时不等，没法准确预测）再继续。
-- **候选数量**：搜索默认拿 5 个候选，`electron/ipc/netease.ts` 里的 `searchCandidates` 第三个参数可以调。
-- **日志**：`electron/logger.ts` 会把关键事件（导出开始/完成、每首歌搜索失败的详情、匹配结果统计）
-  写到本地文件，按天分文件。匹配页有个"查看日志"按钮直接打开文件夹，也可以自己去
-  `%APPDATA%\spotify-netease-desktop\logs\`（Windows）或 `~/Library/Application Support/spotify-netease-desktop/logs/`（Mac）看。
-  遇到限流之类的问题，把对应日志文件里的内容发出来最好排查。
-- 目前没写自动化测试，`tsc --noEmit` 和 `vite build` 过了，但没有用真实 Spotify/网易云账号联调过。
+新功能往上加条目就行，不用重写整个文件。
+
+### v0.1.0 — 首个版本
+
+- Spotify PKCE 登录、网易云扫码登录
+- 歌单导出、逐首搜索匹配（字符串相似度 + 歌手比对打分）
+- 实时匹配结果展示 + 手动换候选/跳过
+- 自适应节流（带随机抖动）+ 限流/网络错误自动暂停 + 断点续传
+- 导入去重：复用同名歌单、跳过已有曲目
+- 本地日志、防止系统休眠、请求超时兜底
